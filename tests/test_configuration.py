@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('configure_existing', ROOT / 'configure_existing.py')
+spec = importlib.util.spec_from_file_location('configure_existing', ROOT / 'adapters/configure_existing.py')
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 guard_spec = importlib.util.spec_from_file_location('agent_guard', ROOT / 'agent_guard.py')
@@ -43,7 +43,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(profile['domains'], ['token-plan.ap-southeast-1.maas.aliyuncs.com:443'])
 
     def test_zai_coding_plan_is_an_allowed_provider_on_its_reviewed_host(self):
-        """safecode 에 GLM(Z.AI Coding Plan)을 붙이려면 허용 목록과 검토된 호스트가 있어야 한다."""
+        """Attaching GLM (Z.AI Coding Plan) to safecode requires an allowlist and a reviewed host."""
         original = {'alibaba-token-plan': {'type': 'api', 'key': 'SYNTHETIC_TOKEN_PLAN'},
                     'zai-coding-plan': {'type': 'api', 'key': 'SYNTHETIC_GLM'},
                     'openai': {'type': 'api', 'key': 'SYNTHETIC_UNRELATED'}}
@@ -58,13 +58,13 @@ class ConfigurationTests(unittest.TestCase):
                                    {'zai-coding-plan': 'https://evil.example/api/coding/paas/v4'})
 
     def test_opencode_go_is_pinned_to_its_go_base_url_not_the_whole_host(self):
-        """OpenCode Go(2026-09-16). 같은 호스트의 Zen 경로(`/zen/v1`)나 다른 경로로 라우팅을 바꾸는 baseURL 은 거부한다."""
+        """OpenCode Go (2026-09-16). Reject a baseURL that reroutes to the Zen path (`/zen/v1`) on the same host, or to any other path."""
         auth = {'opencode-go': {'type': 'api', 'key': 'SYNTHETIC_GO'}}
         runtime, scoped, profile = config.opencode_assets(auth, {}, {'opencode-go': 'https://opencode.ai/zen/go/v1'})
         self.assertEqual(runtime['enabled_providers'], ['opencode-go'])
         self.assertEqual(profile['domains'], ['opencode.ai:443'])
-        import configure_existing as module
-        self.assertEqual(set(module.PROVIDER_ENDPOINTS), set(module.PROVIDER_HOSTS))  # 두 표는 짝으로 늘린다
+        from adapters import configure_existing as module
+        self.assertEqual(set(module.PROVIDER_ENDPOINTS), set(module.PROVIDER_HOSTS))  # The two tables grow as a pair.
         for bad in ('https://opencode.ai/zen/v1', 'https://opencode.ai/zen/go/v1/../v1', 'https://opencode.ai/'):
             with self.assertRaises(ValueError, msg=bad):
                 config.opencode_assets(auth, {'provider': {'opencode-go': {'options': {'baseURL': bad}}}},
@@ -73,7 +73,7 @@ class ConfigurationTests(unittest.TestCase):
                 config.opencode_assets(auth, {}, {'opencode-go': bad})
 
     def test_imported_provider_definitions_cannot_carry_headers_substitutions_or_routing(self):
-        """호스트 설정의 공급자 정의는 헤더·`{env:}`/`{file:}` 치환·`api`·모델별 SDK/라우팅을 실어 나르지 못한다(리뷰 HIGH)."""
+        """A provider definition from the host config must not carry headers, `{env:}`/`{file:}` substitution, `api`, or per-model SDK/routing (review HIGH)."""
         auth = {'opencode-go': {'type': 'api', 'key': 'SYNTHETIC_GO'}}
         endpoints = {'opencode-go': 'https://opencode.ai/zen/go/v1'}
         good = {'provider': {'opencode-go': {'name': 'Go', 'options': {'baseURL': 'https://opencode.ai/zen/go/v1', 'timeout': 30},
@@ -95,7 +95,7 @@ class ConfigurationTests(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError, msg=label):
                 config.opencode_assets(auth, {'provider': {'opencode-go': definition}}, endpoints)
-        # apiKey 는 조용히 제거된다(격리 auth 저장소가 공급).
+        # apiKey is stripped silently (the isolated auth store supplies it).
         runtime, _, _ = config.opencode_assets(auth, {'provider': {'opencode-go': {'options': {'apiKey': 'SYNTHETIC_DROP'}}}}, endpoints)
         self.assertNotIn('SYNTHETIC_DROP', __import__('json').dumps(runtime))
 

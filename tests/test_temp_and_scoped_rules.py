@@ -129,7 +129,7 @@ if __name__ == '__main__': unittest.main()
 
 class DevPortLoopbackTests(unittest.TestCase):
     def test_child_can_connect_to_its_own_development_port(self):
-        """dart test --coverage 는 자기 VM 서비스 포트에 웹소켓으로 접속한다. 바인드만 허용하면 걸린다."""
+        """dart test --coverage connects to its own VM service port over a websocket. Allowing only bind makes it hang."""
         import json as _json, socket, subprocess as _sp, tempfile as _tf
         from pathlib import Path as _P
         import agent_guard as _g
@@ -153,7 +153,7 @@ class DevPortLoopbackTests(unittest.TestCase):
         self.assertIn('HELLO_FROM_SELF', text)
 
     def test_agent_sessions_get_a_private_loopback_port(self):
-        """safecode·zcode 는 세션마다 전용 루프백 포트를 받고 그 포트에 바인드·자기 접속이 된다."""
+        """safecode and zcode each get a dedicated loopback port per session, and can bind to and self-connect on that port."""
         import tempfile as _tf
         from pathlib import Path as _P
         import agent_guard as _g

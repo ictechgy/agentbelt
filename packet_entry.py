@@ -3,7 +3,7 @@ import os
 import sys
 from importlib.metadata import version
 
-# 검토된 버전은 감독자가 환경변수로 넘긴다. 없거나 다르면 어댑터를 로드하지 않는다(닫힘).
+# The supervisor passes the reviewed version through an environment variable. If it is missing or different, the adapter is not loaded (fail closed).
 _expected = os.environ.get('AGENT_GUARD_PACKET_ASK_VERSION', '')
 if not _expected or version('packet-ask') != _expected:
     sys.exit('agent-guard: packet-ask version is not the reviewed one; review the confinement adapter before launching.')

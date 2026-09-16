@@ -1,4 +1,4 @@
-"""safecode 세션이 'Swift 툴체인 고장'으로 오진한 문제의 회귀. 실제 원인은 샌드박스 정책 셋이었다."""
+"""Regression for the problem a safecode session misdiagnosed as a 'broken Swift toolchain'. The real cause was three sandbox policy rules."""
 import json
 import os
 from pathlib import Path
@@ -23,13 +23,13 @@ def confined(work, script, **options):
 
 class PolicyTests(unittest.TestCase):
     def test_environment_points_clang_module_cache_into_the_isolated_home(self):
-        """기본 모듈 캐시(/var/folders)가 막혀 stdlib 를 인터페이스에서 다시 빌드하다 버전 검사에 걸렸다."""
+        """The default module cache (/var/folders) was blocked, so it rebuilt stdlib from the interface and tripped the version check."""
         with tempfile.TemporaryDirectory(prefix='swift-env-', dir=Path.home()) as tmp:
             env = g.clean_environment(Path(tmp))
         self.assertTrue(env['CLANG_MODULE_CACHE_PATH'].startswith(tmp + '/'))
 
     def test_policy_allows_writing_but_not_reading_foundation_temporary_items(self):
-        """Foundation 의 원자적 쓰기는 Darwin 사용자 임시 디렉터리의 TemporaryItems 에 쓰기만 필요하다."""
+        """Foundation's atomic write only needs write access to TemporaryItems in the Darwin per-user temporary directory."""
         items = g.darwin_temporary_items()
         self.assertTrue(items.endswith('/T/TemporaryItems'), items)
         policy = g.sandbox_policy(Path('/tmp/x'), Path('/tmp/h'), [])
@@ -39,7 +39,7 @@ class PolicyTests(unittest.TestCase):
 
 
 class DarwinTempDirectoryTests(unittest.TestCase):
-    """cartograph 는 NSTemporaryDirectory() 아래 두 폴더를 하드코딩하고 TMPDIR 을 무시한다."""
+    """cartograph hardcodes two folders under NSTemporaryDirectory() and ignores TMPDIR."""
 
     def test_configured_names_get_read_write_and_others_stay_closed(self):
         from unittest.mock import patch
@@ -64,7 +64,7 @@ class DarwinTempDirectoryTests(unittest.TestCase):
         self.assertEqual(sorted(options.get('darwinTempDirectories', [])), ['cartograph-index-db', 'cartograph-syntax-cache'])
 
     def test_sandbox_can_use_the_cartograph_directories_but_not_siblings(self):
-        """옵트인 폴더가 호스트에 없어도 된다: `T/` 자체는 닫혀 있으므로 감독자가 실행 전에 만들어 둔다."""
+        """The opt-in folder need not exist on the host: `T/` itself is closed, so the supervisor creates it before execution."""
         base = os.path.dirname(g.darwin_temporary_items())
         import shutil
         for name in ('cartograph-index-db', 'cartograph-syntax-cache'):
@@ -101,14 +101,14 @@ class SandboxTests(unittest.TestCase):
         self.assertNotIn('not supported by the compiler', text)
 
     def test_swift_package_builds_with_the_documented_flags(self):
-        """swift build 는 자체 sandbox-exec(중첩 불가)와 .build/build.db(*.db 비밀 규칙) 때문에 플래그가 필요하다."""
+        """swift build needs flags because of its own sandbox-exec (nesting is not possible) and .build/build.db (the *.db secret rule)."""
         with tempfile.TemporaryDirectory(prefix='swift-pkg-', dir=Path.home()) as tmp:
             work = Path(tmp)
             (work / 'Sources/hello').mkdir(parents=True)
             (work / 'Package.swift').write_text('// swift-tools-version:5.9\nimport PackageDescription\n'
                                                 'let package = Package(name: "hello", targets: [.executableTarget(name: "hello")])\n')
             (work / 'Sources/hello/main.swift').write_text('print("HELLO_PKG")\n')
-            # CLT 27 의 기본 swiftbuild 는 링크 단계에서 TMPDIR 을 잃어 permissionDenied 로 죽는다. 안내문과 같은 플래그.
+            # The default swiftbuild of CLT 27 loses TMPDIR at the link stage and dies with permissionDenied. Same flags as the notice.
             status, text = confined(work, 'swift build --build-system native --disable-sandbox --scratch-path "$TMPDIR/swiftpm-build" '
                                           '--cache-path "$TMPDIR/swiftpm-cache" 2>&1 | grep -E "Build complete|error" | tail -1\n'
                                           '"$TMPDIR/swiftpm-build/debug/hello"\n')

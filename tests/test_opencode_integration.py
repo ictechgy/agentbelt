@@ -118,7 +118,7 @@ raise SystemExit(g.run_confined('opencode-test', Path(sys.argv[2]),
             self.assertNotIn(marker, out)
             self.assertTrue('Operation not permitted' in transferred or 'Permission denied' in transferred,
                             'The model did not receive a filesystem denial.')
-            # 보호 config 디렉터리의 AGENTS.md 가 실제 시스템 프롬프트로 모델에 전달되어야 한다.
+            # AGENTS.md in the protected config directory must reach the model as the actual system prompt.
             system_text = ''.join(str(m.get('content', '')) for r in requests
                                   for m in r.get('messages', []) if m.get('role') == 'system')
             self.assertIn('AGENT_GUARD_ENVIRONMENT.md', system_text,

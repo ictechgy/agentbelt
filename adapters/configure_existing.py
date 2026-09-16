@@ -11,8 +11,8 @@ import re
 import tempfile
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parent
-HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # 계정 DB 의 홈(환경변수 아님)
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
+HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # The home from the account database (not the environment variable)
 PROVIDER_HOSTS = {
     'alibaba': 'dashscope-intl.aliyuncs.com',
     'alibaba-cn': 'dashscope.aliyuncs.com',
@@ -20,32 +20,32 @@ PROVIDER_HOSTS = {
     'alibaba-coding-plan-cn': 'coding.dashscope.aliyuncs.com',
     'alibaba-token-plan': 'token-plan.ap-southeast-1.maas.aliyuncs.com',
     'deepseek': 'api.deepseek.com',
-    # GLM Coding Plan. Zcode 와 packet-ask 가 이미 쓰는 z.ai 호스트의 OpenAI 호환 코딩 엔드포인트.
+    # GLM Coding Plan. The OpenAI-compatible coding endpoint on the z.ai host that Zcode and packet-ask already use.
     'zai-coding-plan': 'api.z.ai',
-    # OpenCode Go($10 구독, 오픈 가중치 모델 묶음). 요청은 OpenCode 게이트웨이 `opencode.ai/zen/go/v1` 로 가고 업스트림
-    # 모델 제공자에게 중계된다(2026-09-16 사용자 결정). 같은 호스트의 `opencode`(Zen) 공급자는 별도 검토 전까지 넣지 않는다.
+    # OpenCode Go ($10 subscription, a bundle of open-weight models). Requests go to the OpenCode gateway `opencode.ai/zen/go/v1`
+    # and are relayed to the upstream model provider (user decision 2026-09-16). The `opencode` (Zen) provider on the same host is not added until it is reviewed separately.
     'opencode-go': 'opencode.ai',
 }
 PROVIDERS = set(PROVIDER_HOSTS)
-# 공급자별 검토된 base URL 전체(경로 포함). 호스트만 비교하면 같은 호스트의 다른 API(`opencode.ai/zen/v1` Zen 등)로
-# 라우팅을 바꿀 수 있다(2026-09-16 리뷰 HIGH). 바이너리 내장값·사용자 baseURL 모두 이 값과 정확히 같아야 한다.
+# The full reviewed base URL for each provider (path included). Comparing only the host would allow routing to be switched to a
+# different API on the same host (Zen at `opencode.ai/zen/v1` and the like) (review HIGH 2026-09-16). Both the value built into the binary and the user's baseURL must be exactly this value.
 PROVIDER_ENDPOINTS = {
     'alibaba': {'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'},
     'alibaba-cn': {'https://dashscope.aliyuncs.com/compatible-mode/v1'},
     'alibaba-coding-plan': {'https://coding-intl.dashscope.aliyuncs.com/v1'},
     'alibaba-coding-plan-cn': {'https://coding.dashscope.aliyuncs.com/v1'},
     'alibaba-token-plan': {'https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1'},
-    # DeepSeek 은 내장값이 루트이고 문서상 `/v1` 도 같은 OpenAI 호환 API 다(기존 사용자 override 를 유지).
+    # For DeepSeek the built-in value is the root and, per the documentation, `/v1` is the same OpenAI-compatible API (this keeps an existing user override).
     'deepseek': {'https://api.deepseek.com', 'https://api.deepseek.com/v1'},
     'zai-coding-plan': {'https://api.z.ai/api/coding/paas/v4'},
     'opencode-go': {'https://opencode.ai/zen/go/v1'},
 }
-# 가져오는 공급자 정의에서 허용하는 최상위 키. `api`·`headers`·중첩 SDK 지정은 라우팅·자격 증명 경로를 바꾸므로 받지 않는다.
+# The top-level keys allowed in an imported provider definition. `api`, `headers` and a nested SDK selection are not accepted because they change routing and credential paths.
 PROVIDER_DEFINITION_KEYS = {'name', 'npm', 'options', 'models'}
-# `{env:…}`·`{file:…}` 치환은 세션 환경(GH_TOKEN 등)이나 파일 내용을 요청에 실을 수 있다. 정의 어디에도 두지 않는다.
+# `{env:...}` and `{file:...}` substitution can put the session environment (GH_TOKEN and the like) or file contents into a request. They are allowed nowhere in a definition.
 SUBSTITUTION = re.compile(r'\{(env|file):')
-# 검토된 추가 모델 정의(`state/opencode-models.json`)에 허용하는 키. OpenCode 는 낯선 키에 엄격하고,
-# `npm`·`options.baseURL` 같은 키는 공급자 경로를 바꿀 수 있어 받지 않는다.
+# The keys allowed in the reviewed extra model definitions (`state/opencode-models.json`). OpenCode is strict about unfamiliar
+# keys, and keys such as `npm` and `options.baseURL` are not accepted because they can change the provider path.
 EXTRA_MODEL_KEYS = {'name', 'limit', 'tool_call', 'reasoning', 'attachment', 'temperature', 'cost', 'options', 'modalities'}
 EXTRA_MODEL_ID = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
 
@@ -69,7 +69,7 @@ def embedded_endpoints(binary):
 
 
 def load_extra_models():
-    """가드 소유 `state/opencode-models.json`. 없으면 빈 사전. 형식은 {공급자: {모델ID: 정의}}."""
+    """The guard-owned `state/opencode-models.json`. An empty dictionary if it is missing. The format is {provider: {model id: definition}}."""
     path = ROOT / 'state/opencode-models.json'
     if not path.is_file():
         return {}
@@ -80,7 +80,7 @@ def load_extra_models():
 
 
 def validate_extra_model(model_id, definition):
-    """모델 ID 와 정의를 검사한다. 통과하면 깊은 복사본을 돌려준다."""
+    """Validate the model id and the definition. If they pass, return a deep copy."""
     if not isinstance(model_id, str) or not EXTRA_MODEL_ID.match(model_id):
         raise ValueError('Extra model id must be a short lowercase identifier')
     if not isinstance(definition, dict) or not isinstance(definition.get('name'), str):
@@ -98,7 +98,7 @@ def validate_extra_model(model_id, definition):
 
 
 def merge_extra_models(config, extras):
-    """활성 공급자에 한해 추가 모델을 `provider.<id>.models` 에 병합한 설정 사본. 기존 정의는 유지한다."""
+    """A copy of the config with the extra models merged into `provider.<id>.models`, for enabled providers only. Existing definitions are kept."""
     merged = copy.deepcopy(config)
     enabled = set(merged.get('enabled_providers') or [])
     for provider, models in (extras or {}).items():
@@ -116,7 +116,7 @@ def merge_extra_models(config, extras):
 
 
 def refresh_models():
-    """파생 설정만 다시 쓴다. 자격 증명·호스트 설정은 읽지 않는다."""
+    """Rewrite only the derived configuration. Credentials and host settings are not read."""
     state = ROOT / 'state'
     path = state / 'opencode-config.json'
     if not path.is_file():
@@ -164,7 +164,7 @@ def opencode_assets(auth, source, endpoints):
 
 
 def contains_substitution(value):
-    """정의 트리 어디든 `{env:` / `{file:` 문자열이 있으면 True."""
+    """True if the string `{env:` or `{file:` appears anywhere in the definition tree."""
     if isinstance(value, str):
         return bool(SUBSTITUTION.search(value))
     if isinstance(value, dict):
@@ -175,11 +175,12 @@ def contains_substitution(value):
 
 
 def sanitize_provider_definition(definition):
-    """호스트 설정의 공급자 정의를 검토된 형태로만 옮긴다.
+    """Carry the provider definition from the host configuration over only in its reviewed form.
 
-    왜. 정의는 사용자 소유지만 OpenCode 는 `options.headers`·모델별 `headers`·`provider.api`·중첩 `npm` 을 그대로 요청과
-    SDK 로딩에 쓰고 `{env:GH_TOKEN}` 치환도 한다. 그대로 복사하면 세션의 GitHub 토큰이 헤더로 게이트웨이에 가거나
-    검토 밖 SDK 가 샌드박스 안에서 실행된다(2026-09-16 리뷰 HIGH). 자격 증명은 격리 auth 저장소로만 준다.
+    Why. The definition belongs to the user, but OpenCode uses `options.headers`, per-model `headers`, `provider.api` and
+    a nested `npm` directly for requests and SDK loading, and it also performs `{env:GH_TOKEN}` substitution. Copying it
+    as is would send the session's GitHub token to the gateway as a header, or run an unreviewed SDK inside the sandbox
+    (review HIGH 2026-09-16). Credentials are supplied only through the isolated auth store.
     """
     if not isinstance(definition, dict):
         raise ValueError('Provider definition must be an object')

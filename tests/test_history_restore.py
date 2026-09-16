@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec=importlib.util.spec_from_file_location('restore_history',ROOT/'restore_history.py')
+spec=importlib.util.spec_from_file_location('restore_history',ROOT/'adapters/restore_history.py')
 restore=importlib.util.module_from_spec(spec);spec.loader.exec_module(restore)
 SCHEMA='''
 CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT,permission TEXT,parent_id TEXT);
@@ -47,7 +47,7 @@ class HistoryRestoreTests(unittest.TestCase):
             c=sqlite3.connect(source);c.execute('INSERT INTO session VALUES(?,?,NULL,NULL)',('one',str(work)));c.commit();c.close()
             target=work/'connection.store';target.symlink_to(outside)
             before=outside.read_bytes();snapshot=restore.collect_snapshot(source,work)
-            runner="import sys;sys.path.insert(0,sys.argv[1]);import agent_guard as g;from pathlib import Path;sys.exit(g.run_confined('history-boundary',Path(sys.argv[2]),['/Library/Developer/CommandLineTools/usr/bin/python3','-I',str(g.ROOT/'restore_history.py'),'--apply-snapshot',sys.argv[3]],extra_reads=[g.ROOT/'restore_history.py'],ephemeral=True))"
+            runner="import sys;sys.path.insert(0,sys.argv[1]);import agent_guard as g;from pathlib import Path;sys.exit(g.run_confined('history-boundary',Path(sys.argv[2]),['/Library/Developer/CommandLineTools/usr/bin/python3','-I',str(g.ROOT/'adapters/restore_history.py'),'--apply-snapshot',sys.argv[3]],extra_reads=[g.ROOT/'adapters/restore_history.py'],ephemeral=True))"
             result=subprocess.run(['/usr/bin/python3','-I','-c',runner,str(ROOT),str(work),str(target)],input=json.dumps(snapshot),capture_output=True,text=True,timeout=20)
             self.assertNotEqual(result.returncode,0)
             self.assertEqual(outside.read_bytes(),before)

@@ -54,8 +54,8 @@ async function main() {
           throw new Error('zcode config parent does not resolve inside the isolated home');
         }
       }
-      // 감독자가 브로커 포트를 열어 준 세션(AutoClaw 모델 브로커)은 루프백을 프록시로 보내면 안 된다.
-      // 프록시는 도메인 허용 목록만 알고, Seatbelt 가 그 포트 하나만 직접 연결로 허용한다.
+      // A session where the supervisor opened a broker port (the AutoClaw model broker) must not send loopback through the proxy.
+      // The proxy only knows the domain allow list, and Seatbelt allows a direct connection to that one port only.
       const loopbackBypass = Number(process.env.AGENT_GUARD_BROKER_PORT || 0) ? '127.0.0.1,localhost' : '';
       config.network = {...config.network, httpProxy: generatedEnv.HTTPS_PROXY, noProxy: loopbackBypass,
                         caCertFile: '/private/etc/ssl/cert.pem'};
@@ -139,8 +139,8 @@ async function main() {
       }
       const escaped = keystoreRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const pattern = '^' + escaped + '/(.*/)?gradle\\.keystore$';
-      // SRT 의 keystore deny 는 file-write-create 등 구체 op 라, 와일드카드 file-write* allow 로는 못 이긴다
-      // (Seatbelt 는 더 구체적인 op 규칙을 우선한다). 같은 구체 op 를 나열해야 이 파일명만 re-allow 된다.
+      // The keystore deny of the SRT uses concrete ops such as file-write-create, so a wildcard file-write* allow cannot beat it
+      // (Seatbelt gives priority to the more specific op rule). Only listing the same concrete ops re-allows this one file name.
       const ops = 'file-read-data file-read-metadata file-read-xattr file-write-create file-write-data '
         + 'file-write-flags file-write-mode file-write-owner file-write-setugid file-write-times file-write-unlink';
       argv[index + 2] += '\n(allow ' + ops + ' (regex ' + JSON.stringify(pattern) + '))\n';

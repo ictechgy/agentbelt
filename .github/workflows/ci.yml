@@ -1,0 +1,28 @@
+name: ci
+# Kernel-boundary tests need macOS Seatbelt and the pinned Node runtime. Tests that need the
+# operator's agent binaries (OpenCode, Kimi, Zcode.app, AutoClaw.app, packet-ask) are not run here;
+# they run on an operator machine via `agent-guard verify-updates`.
+on: [push, pull_request]
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned sandbox runtime
+        run: cd runtime && npm ci --ignore-scripts --no-audit --no-fund
+      - name: Syntax
+        run: |
+          /usr/bin/python3 -m compileall -q .
+          for f in *.mjs *.cjs; do node --check "$f"; done
+      - name: Pin node for the supervisor
+        run: printf '{\n  "node": "%s"\n}\n' "$(command -v node)" > config.json
+      - name: Kernel boundary tests (self-contained modules)
+        run: |
+          /usr/bin/python3 -m unittest -v \
+            tests.test_boundaries tests.test_terminal_boundary tests.test_hardening_fixes \
+            tests.test_zcode_hook tests.test_orca_bridge tests.test_prompt_telemetry \
+            tests.test_history_restore tests.test_usage_cli tests.test_swift_toolchain \
+            tests.test_temp_and_scoped_rules

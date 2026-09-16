@@ -1,14 +1,14 @@
-"""Token Plan 사용량 CLI(`bl`, bailian-cli)를 격리해서 돌리는 usage 모드.
+"""usage mode that runs the Token Plan usage CLI (`bl`, bailian-cli) confined.
 
-왜 격리하는가. `bl` 은 `bl config agent` 로 `CLAUDE_CONFIG_DIR`·`CODEX_HOME` 같은 다른
-에이전트 설정을 건드릴 수 있고, 콘솔 로그인 토큰을 보관한다. 호스트에 전역 설치하지 않고
-가드 소유 격리 홈 안에만 설치해, 사용자 프로젝트·실제 홈·다른 격리 홈·Keychain 은 기존
-Seatbelt 정책대로 보이지 않게 한다.
+Why confine it. Through `bl config agent`, `bl` can touch the settings of other agents such as
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and it keeps the console login token. Instead of installing it
+globally on the host, it is installed only inside a guard-owned isolated home, so user projects, the real
+home, other isolated homes, and the Keychain stay invisible under the existing Seatbelt policy.
 
-왜 로그인만 호스트에서 하는가. `bl usage token-plan` 은 API 키가 아니라 콘솔 로그인
-토큰을 요구하며, 로그인은 무작위 127.0.0.1 포트에 콜백 서버를 열고 브라우저를 띄운다.
-둘 다 샌드박스에서 막히므로 로그인 1회는 호스트에서 돌리되, HOME 과 `BAILIAN_CONFIG_DIR`
-을 격리 홈으로 고정해 토큰이 격리 홈 밖에 남지 않게 한다. 이후 모든 조회는 샌드박스 안이다.
+Why only the login runs on the host. `bl usage token-plan` requires a console login token rather than an
+API key, and the login opens a callback server on a random 127.0.0.1 port and launches a browser.
+Both are blocked in the sandbox, so the one-time login runs on the host, but HOME and `BAILIAN_CONFIG_DIR`
+are pinned to the isolated home so the token does not end up outside it. Every query after that is inside the sandbox.
 """
 import hashlib
 import json
@@ -17,36 +17,36 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
 import agent_guard  # noqa: E402
 
-# usage 모드 정책 파일. 도메인·CLI 버전·콘솔 사이트/리전을 여기서만 바꾼다.
+# Policy file for usage mode. Change the domains, the CLI version, and the console site/region only here.
 PROFILE_PATH = ROOT / 'state/usage-profile.json'
-# 격리 홈 안의 bl 설치 접두사. npm --prefix 로 이 아래 node_modules 에 들어간다.
+# Install prefix for bl inside the isolated home. With npm --prefix it lands in node_modules under this.
 CLI_PREFIX = 'bl-prefix'
 
 
 def default_profile():
-    """검토된 기본 정책. 국제 사이트 콘솔 게이트웨이와 Token Plan 호스트만 허용한다.
+    """Reviewed default policy. Allows only the international site console gateway and the Token Plan host.
 
-    중국 본토 게이트웨이는 넣지 않는다. 사용자의 Token Plan 엔드포인트가 ap-southeast-1 이다.
+    The mainland China gateway is not included. The Token Plan endpoint of the user is ap-southeast-1.
     """
     return {
         'cliVersion': '1.21.0',
         'consoleSite': 'international',
         'consoleRegion': 'ap-southeast-1',
         'domains': [
-            'bailian-singapore-cs.alibabacloud.com:443',   # ap-southeast-1 국제 콘솔 게이트웨이
-            'bailian-cs.console.alibabacloud.com:443',     # cn-beijing 국제 콘솔 게이트웨이
-            'modelstudio.console.alibabacloud.com:443',    # 국제 콘솔(로그인 리다이렉트)
+            'bailian-singapore-cs.alibabacloud.com:443',   # ap-southeast-1 international console gateway
+            'bailian-cs.console.alibabacloud.com:443',     # cn-beijing international console gateway
+            'modelstudio.console.alibabacloud.com:443',    # international console (login redirect)
             'token-plan.ap-southeast-1.maas.aliyuncs.com:443',
         ],
     }
 
 
 def load_profile():
-    """정책 파일을 읽는다. 없으면 기본값을 0600 으로 만들어 둔다."""
+    """Read the policy file. If it is missing, create the default with mode 0600."""
     if not PROFILE_PATH.is_file():
         agent_guard.private_dir(PROFILE_PATH.parent)
         agent_guard.write_private_json(PROFILE_PATH, default_profile())
@@ -57,24 +57,24 @@ def load_profile():
 
 
 def usage_workspace():
-    """가드 소유의 빈 워크스페이스. 사용자 프로젝트는 절대 쓰지 않는다."""
+    """Guard-owned empty workspace. A user project is never used."""
     return agent_guard.private_dir(agent_guard.private_dir(ROOT / 'state') / 'usage-workspace')
 
 
 def usage_home():
-    """run_confined 가 mode='usage' 에 쓰는 지속 격리 홈과 같은 경로."""
+    """The same path as the persistent isolated home run_confined uses for mode='usage'."""
     identity = hashlib.sha256(str(usage_workspace()).encode()).hexdigest()[:20]
     state = ROOT / 'state'
     return agent_guard.private_dir(agent_guard.private_dir(agent_guard.private_dir(state / 'homes') / 'usage') / identity)
 
 
 def bl_entry(home):
-    """격리 홈 안에 설치된 bl 진입 스크립트."""
+    """The bl entry script installed inside the isolated home."""
     return home / CLI_PREFIX / 'node_modules/bailian-cli/dist/bailian.mjs'
 
 
 def install_command(profile):
-    """고정 버전의 bailian-cli 를 격리 홈 접두사에 설치하는 셸 명령."""
+    """Shell command that installs the pinned version of bailian-cli into the isolated home prefix."""
     version = profile['cliVersion']
     if not all(part.isdigit() for part in version.split('.')):
         raise agent_guard.GuardError('usage-profile cliVersion must be a plain semantic version.')
@@ -84,7 +84,7 @@ def install_command(profile):
 
 
 def query_command(home, profile, extra):
-    """샌드박스 안에서 돌릴 bl 명령. 인자가 없으면 Token Plan 요약이다."""
+    """The bl command to run inside the sandbox. With no arguments it is the Token Plan summary."""
     entry = bl_entry(home)
     if not entry.is_file():
         raise agent_guard.GuardError('bl is not installed in the isolated home yet; run agent-guard usage setup first.')
@@ -95,9 +95,9 @@ def query_command(home, profile, extra):
 
 
 def host_time_zone():
-    """호스트의 시간대 이름. 샌드박스는 zoneinfo 파일을 못 읽어 UTC 로 찍히므로 이름만 넘긴다.
+    """The time zone name of the host. The sandbox cannot read zoneinfo files and prints UTC, so only the name is passed.
 
-    Node 는 TZ 이름을 내장 ICU 데이터로 해석하므로 파일 접근이 필요 없다.
+    Node resolves a TZ name with its built-in ICU data, so no file access is needed.
     """
     try:
         target = os.readlink('/etc/localtime')
@@ -109,23 +109,23 @@ def host_time_zone():
 
 
 def run_sandboxed(command, domains):
-    """가드 소유 워크스페이스와 지속 격리 홈으로 bl 을 Seatbelt 안에서 실행한다."""
-    # bl 은 실행마다 Node 의 실험 기능 경고(UNDICI-EHPA)를 두 줄 찍어 결과를 가린다.
+    """Run bl inside Seatbelt with the guard-owned workspace and the persistent isolated home."""
+    # On every run bl prints two lines of the Node experimental feature warning (UNDICI-EHPA) that hide the result.
     status = agent_guard.run_confined('usage', usage_workspace(), command, sorted(set(domains)),
                                       extra_env={'TZ': host_time_zone(), 'NODE_OPTIONS': '--no-warnings'})
     if status == 3:
-        # bl 의 종료 코드 3 은 인증 문제다. bl 의 안내(`bl auth login --console`)는 호스트 홈에 저장하므로
-        # 격리 홈을 쓰는 우리 명령을 대신 알려 준다.
-        print('token-usage: 콘솔 로그인이 없거나 만료됐습니다. `token-usage login` 으로 다시 로그인하세요.', file=sys.stderr)
+        # Exit code 3 from bl means an authentication problem. The guidance of bl (`bl auth login --console`) stores into the
+        # host home, so point at our command that uses the isolated home instead.
+        print('token-usage: the console login is missing or expired. Log in again with `token-usage login`.', file=sys.stderr)
     return status
 
 
 def login_on_host(home):
-    """콘솔 로그인 1회. 샌드박스 밖이지만 HOME 과 설정 디렉터리를 격리 홈으로 고정한다.
+    """One console login. It runs outside the sandbox, but HOME and the settings directory are pinned to the isolated home.
 
-    브라우저가 열리고 로컬 콜백 포트가 필요해서 샌드박스 안에서는 돌 수 없다.
-    환경은 최소한만 넘긴다. 다른 에이전트의 설정 디렉터리 변수는 일부러 빼서
-    `bl config agent` 류가 실제 설정을 찾지 못하게 한다.
+    It cannot run inside the sandbox because a browser is opened and a local callback port is needed.
+    Only a minimal environment is passed. The settings directory variables of other agents are left out on purpose
+    so that anything like `bl config agent` cannot find the real settings.
     """
     entry = bl_entry(home)
     if not entry.is_file():
@@ -143,7 +143,7 @@ def login_on_host(home):
 
 
 def run_usage(arguments):
-    """`agent-guard usage [setup|login|-- <bl args>]` 진입점."""
+    """Entry point for `agent-guard usage [setup|login|-- <bl args>]`."""
     profile = load_profile()
     home = usage_home()
     if arguments == ['setup']:

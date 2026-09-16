@@ -7,8 +7,8 @@ from pathlib import Path
 import plistlib
 import shlex
 
-ROOT = Path(__file__).resolve().parent
-HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # 계정 DB 의 홈(환경변수 아님)
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
+HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # Home from the account database (not the environment variable)
 STATE = ROOT / 'state'
 
 

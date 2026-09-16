@@ -1,4 +1,4 @@
-"""샌드박스 에이전트의 요청으로 감독자가 packet-ask 를 승격하는 경로의 회귀."""
+"""Regression for the path where the supervisor promotes packet-ask at the sandboxed agent's request."""
 import json
 import os
 from pathlib import Path
@@ -11,8 +11,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import agent_guard as g
-import packet_promote
-import packet_relay
+from adapters import packet_promote
+from adapters import packet_relay
 
 GOOD_PUBLISHER = {'kind': 'GitHub', 'repository': 'ictechgy/packet-ask', 'workflow': 'release.yml'}
 import hashlib
@@ -21,7 +21,7 @@ WHEEL_SHA = hashlib.sha256(WHEEL_BYTES).hexdigest()
 
 
 def fake_fetch_factory(version, publisher=GOOD_PUBLISHER, files=('whl', 'tar')):
-    """PyPI JSON·integrity 응답을 흉내 낸다."""
+    """Imitate the PyPI JSON and integrity responses."""
     def fetch(url):
         if url.endswith('/packet-ask/json'):
             return {'info': {'version': version}, 'releases': {version: [

@@ -1,7 +1,8 @@
-"""검토된 추가 모델(`state/opencode-models.json`)이 safecode 파생 설정에 병합되는지 확인하는 회귀.
+"""Regression checking that reviewed extra models (`state/opencode-models.json`) are merged into the safecode derived config.
 
-OpenCode 1.18.29 의 내장 카탈로그에 없는 새 모델(예: 알리바바 Token Plan 의 deepseek-v4.1-flash)을 가드 소유 파일로
-정의한다. 호스트 설정을 다시 가져와도 사라지지 않아야 하고, 허용 목록 밖 공급자·이상한 ID·낯선 키는 거부한다.
+New models absent from the built-in catalog of OpenCode 1.18.29 (for example deepseek-v4.1-flash of Alibaba Token Plan) are
+defined in a guard-owned file. They must not disappear when the host config is imported again, and providers outside the
+allowlist, malformed IDs and unfamiliar keys are rejected.
 """
 import json
 from pathlib import Path
@@ -12,7 +13,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import configure_existing as configure
+from adapters import configure_existing as configure
 
 MODEL = {'name': 'DeepSeek V4.1 Flash', 'limit': {'context': 1000000, 'output': 393216}, 'tool_call': True,
          'reasoning': False, 'attachment': True, 'temperature': True,
@@ -26,7 +27,7 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(merged['provider']['alibaba-token-plan']['models']['deepseek-v4.1-flash'], MODEL)
         self.assertNotIn('zai-coding-plan', merged['provider'])
         self.assertEqual(merged['permission'], {'*': 'ask'})
-        self.assertNotIn('provider', config)  # 입력은 바꾸지 않는다
+        self.assertNotIn('provider', config)  # Do not modify the input.
 
     def test_existing_provider_definition_and_models_are_preserved(self):
         config = {'enabled_providers': ['alibaba-token-plan'],
@@ -60,7 +61,7 @@ class RefreshTests(unittest.TestCase):
             (state / 'opencode-models.json').write_text(json.dumps({'alibaba-token-plan': {'deepseek-v4.1-flash': MODEL}}))
             with patch.object(configure, 'ROOT', root):
                 configure.refresh_models()
-                configure.refresh_models()  # 재실행해도 같다
+                configure.refresh_models()  # Re-running gives the same result.
             config = json.loads((state / 'opencode-config.json').read_text())
             self.assertEqual(config['provider']['alibaba-token-plan']['models']['deepseek-v4.1-flash'], MODEL)
             self.assertEqual(config['share'], 'disabled')

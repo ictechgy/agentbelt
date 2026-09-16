@@ -44,7 +44,7 @@ class ToolchainVisibilityTests(unittest.TestCase):
 
 class DartCoverageTests(unittest.TestCase):
     def test_dart_coverage_runs_on_the_session_loopback_port(self):
-        """실사용 세션 보고: dart test --coverage 가 VM 서비스 포트에서 멈췄다. 전용 포트로 돌아야 한다."""
+        """Reported by a real session: dart test --coverage hung on the VM service port. It must run on the dedicated port."""
         with tempfile.TemporaryDirectory(prefix='dartcov-', dir=Path.home()) as tmp:
             work = Path(tmp)
             (work / 'pubspec.yaml').write_text('name: covtest\nenvironment:\n  sdk: ">=3.0.0 <4.0.0"\ndev_dependencies:\n  test: ^1.25.0\n')
@@ -72,7 +72,7 @@ class DartCoverageTests(unittest.TestCase):
 
 class GithubReleaseAssetTests(unittest.TestCase):
     def test_release_assets_host_is_reviewed_and_reachable(self):
-        """OpenCode 가 ripgrep 을 GitHub 릴리스에서 받는데 자산 호스트가 막혀 glob·grep 이 전부 실패했다."""
+        """OpenCode fetches ripgrep from GitHub releases, and with the asset host blocked, glob and grep all failed."""
         self.assertIn('release-assets.githubusercontent.com:443', g.development_options()['packageDomains'])
         _, text = confined('curl -sSL -m 60 -o "$TMPDIR/rg.tgz" -w "final:%{http_code}\\n" '
                            'https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-aarch64-apple-darwin.tar.gz 2>&1 | tail -1\n'

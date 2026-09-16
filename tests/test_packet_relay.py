@@ -1,4 +1,4 @@
-"""safecode 감독자가 샌드박스 대신 packet-ask 를 실행해 주는 중계 회귀."""
+"""Regression for the relay where the safecode supervisor runs packet-ask on behalf of the sandbox."""
 import json
 import os
 from pathlib import Path
@@ -12,12 +12,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import agent_guard as g
-import packet_relay
+from adapters import packet_relay
 
 
 class VersionGateTests(unittest.TestCase):
     def test_pinned_version_lives_only_in_the_state_file(self):
-        """게이트가 소스 상수였을 때 승격마다 가드 코드를 고쳐야 했고 한 번은 0.9.0 이 남아 실패했다."""
+        """When the gate was a source constant, every promotion required editing guard code, and once 0.9.0 was left behind and it failed."""
         pinned = json.loads((ROOT / 'state/packet-ask-version.json').read_text())['version']
         self.assertRegex(pinned, r'^\d+\.\d+\.\d+$')
         self.assertEqual(g.packet_ask_pinned_version(), pinned)
@@ -31,7 +31,7 @@ class VersionGateTests(unittest.TestCase):
         self.assertEqual(env['AGENT_GUARD_PACKET_ASK_VERSION'], g.packet_ask_pinned_version())
 
     def test_entry_refuses_without_the_supervisor_version(self):
-        """환경변수가 없으면 닫힌다. 우회로 직접 실행하면 어댑터가 로드되지 않는다."""
+        """Without the environment variable it is closed. Running it directly as a bypass does not load the adapter."""
         import runpy
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop('AGENT_GUARD_PACKET_ASK_VERSION', None)
@@ -128,7 +128,7 @@ class ProviderTests(unittest.TestCase):
              patch('sys.stdin', __import__('io').StringIO('review this please')):
             (ROOT / 'state/opencode-auth.json').is_file() or self.skipTest('no opencode auth fixture')
             self.assertEqual(g.main(['opencode-review', str(self.workspace)]), 0)
-        # 두 번째 실행에서 설정 파일이 이미 있어도 실패하지 않아야 한다(O_EXCL 회귀).
+        # A second run must not fail even when the config file already exists (O_EXCL regression).
         with patch.object(g, 'run_confined', fake_run_confined), \
              patch.object(g, 'verify_opencode_binary', lambda: None), \
              patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \

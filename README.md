@@ -37,8 +37,9 @@ opinionated. Expect:
 - Adapters are pinned to reviewed binary hashes. When OpenCode or Kimi updates itself, launches
   are refused until `agent-guard verify-updates` re-runs the suite and records the new baseline.
   That is deliberate.
-- Comments and the design notes under `docs/` are in Korean; the code identifiers and this README
-  are English. Translation is in progress.
+- Code, comments, tests and the agent-facing session notice are English. The operator docs under
+  `docs/ko/` and the original design notes under `docs/design/ko/` are Korean (English summaries in
+  `docs/design/README.md`); the Zcode Safe Dock app's UI strings are Korean.
 
 ## Modes
 
@@ -49,14 +50,14 @@ opinionated. Expect:
 | `safekimi` | [Kimi Code](https://www.kimi.com/code) CLI in the current directory | clipboard denied at the kernel, device-code login inside the sandbox, watcher preload (see below) |
 | `token-usage` | Alibaba Token Plan usage CLI (`bl`) | isolated install, host login once |
 | Zcode Safe.app | Zcode desktop with a confined agent backend | Dock launcher built from `ZcodeSafe.swift` |
-| `autoclaw-backend` | AutoClaw's bundled Zcode CLI | installed by `install_autoclaw.py`; yolo mode, no host exec |
+| `autoclaw-backend` | AutoClaw's bundled Zcode CLI | installed by `adapters/install_autoclaw.py`; yolo mode, no host exec |
 
 Run `agent-guard doctor` to see which baselines are verified.
 
 ## Install
 
 ```sh
-git clone https://github.com/<you>/agent-guard
+git clone https://github.com/ictechgy/agent-guard
 cd agent-guard
 ./install.sh              # copies code to ~/.local/share/agent-guard, pins node, npm ci, builds the launcher
 agent-guard doctor
@@ -68,7 +69,7 @@ only `{type, key}`):
 
 ```sh
 cd ~/.local/share/agent-guard
-/usr/bin/python3 configure_existing.py --authorized-live-settings
+/usr/bin/python3 adapters/configure_existing.py --authorized-live-settings
 cd ~/my-project && safecode
 ```
 
@@ -109,14 +110,20 @@ Short versions; the tests and `docs/` carry the details.
 ## Layout
 
 ```
-agent_guard.py          supervisor: policy, run_confined, mode dispatch
-sandbox_runner.mjs      trusted wrapper around sandbox-runtime; appends the extra SBPL rules
-environment_notice.py   per-session environment description for the agent
-kimi_cli.py             Kimi Code mode      configure_existing.py  OpenCode provider import
-usage_cli.py            Token Plan mode     compatibility_check.py binary baselines
-zcode_hook.py           in-sandbox tool hook (riskgate policy) for Zcode
-packet_relay.py         supervisor-side review relay (agent cannot nest sandboxes)
-install_autoclaw.py     AutoClaw integration installer
+core (repository root; imported or read from inside the sandbox)
+  agent_guard.py          supervisor: policy, run_confined, mode dispatch
+  sandbox_runner.mjs      trusted wrapper around sandbox-runtime; appends the extra SBPL rules
+  environment_notice.py   per-session environment description for the agent
+  zcode_hook.py           in-sandbox tool hook (riskgate policy) for Zcode
+  packet_entry.py         in-sandbox entry for the packet-ask adapter
+  kimi_watch_bootstrap.cjs / proxy_bootstrap.mjs   Node preloads injected into confined agents
+adapters/ (host-side only)
+  kimi_cli.py             Kimi Code mode      configure_existing.py  OpenCode provider import
+  usage_cli.py            Token Plan mode     compatibility_check.py binary baselines
+  packet_relay.py         supervisor-side review relay (agent cannot nest sandboxes)
+  install_autoclaw.py     AutoClaw integration installer; bind_autoclaw_workspace.py channel binding
+  orca_broker.py          Orca status relay   restore_history.py     Zcode conversation import
+  install_profiles.py     Zcode Safe profiles and app bundle
 ZcodeSafe.swift         Dock launcher for the Zcode desktop integration
 tests/                  regressions; most exercise a real Seatbelt profile
 vendor/riskgate         vendored policy engine (MIT)

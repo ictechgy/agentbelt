@@ -32,8 +32,8 @@
 - **`agent_guard.py` must not import sibling modules at top level.** `zcode_hook.py` imports it from
   inside the sandbox; any import failure there is translated into a `deny` decision, so a new
   top-level import that is unreadable inside the sandbox silently denies every tool call.
-  Host-only modules (`kimi_cli`, `usage_cli`, `environment_notice`, `packet_relay`) are imported
-  lazily inside `main()` / `run_confined()`.
+  Host-only modules live in `adapters/` and are imported lazily inside `main()` / `run_confined()`;
+  `environment_notice` stays at the root but is also imported lazily.
 - **Owner home comes from the account database, not `$HOME`.** Inside the sandbox `$HOME` is the
   isolated home; `workspace_path()` would otherwise judge boundaries against the wrong root.
 - **Supervisor writes into child-writable trees only via `write_private_file`.** It descends with

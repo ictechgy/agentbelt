@@ -1,13 +1,13 @@
-"""샌드박스 에이전트의 요청으로 감독자가 packet-ask 를 승격하는 호스트 전용 모듈.
+"""Host-only module in which the supervisor promotes packet-ask at the sandboxed agent's request.
 
-사람이 손으로 하던 절차를 코드로 옮기되, 불변 조건은 사람보다 엄격하게 강제한다.
-1. PyPI 릴리스가 존재하고 두 파일(wheel·sdist)의 provenance 게시자가 고정값과 정확히 같다.
-2. 요청 버전이 현재 고정 버전보다 높다.
-3. 설치 뒤 어댑터가 쓰는 네 파일이 이전 설치본과 바이트 동일하고 훅 표면이 남아 있다.
-4. 가드 전체 테스트가 통과한다.
-하나라도 어긋나면 이전 버전을 다시 설치하고 고정 버전을 되돌린 뒤 거부 사유를 돌려준다.
-어댑터 표면이 바뀐 승격이야말로 사람이 봐야 하므로 그때만 사람에게 넘어간다.
-신뢰 경계는 고정 게시자(사용자의 GitHub 릴리스 워크플로)다.
+It moves a procedure people used to carry out by hand into code, but enforces the invariants more strictly than a person would.
+1. The PyPI release exists and the provenance publisher of both files (wheel and sdist) is exactly the pinned value.
+2. The requested version is higher than the currently pinned version.
+3. After installation the four files the adapter uses are byte identical to the previous install and the hook surface is still there.
+4. The full guard test suite passes.
+If even one of them does not hold, the previous version is installed again, the pinned version is restored and the refusal reason is returned.
+A promotion in which the adapter surface changed is exactly what a person has to look at, so only then does it go to a person.
+The trust boundary is the pinned publisher (the user's GitHub release workflow).
 """
 import hashlib
 import json
@@ -20,13 +20,13 @@ import tempfile
 import time
 import urllib.request
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
 import agent_guard  # noqa: E402
 
-# 이 게시자가 아닌 릴리스는 무엇이든 거부한다. 사용자의 릴리스 워크플로가 신뢰 경계다.
+# Any release that is not from this publisher is refused. The user's release workflow is the trust boundary.
 PINNED_PUBLISHER = {'kind': 'GitHub', 'repository': 'ictechgy/packet-ask', 'workflow': 'release.yml'}
-# 격리 어댑터(packet_entry.py)가 의존하는 파일. 바뀌면 사람이 어댑터를 다시 검토해야 한다.
+# The files the isolation adapter (packet_entry.py) depends on. If they change, a person has to review the adapter again.
 ADAPTER_FILES = ('scope.py', 'launch.py', 'doctor.py', 'paths.py')
 HOOK_MARKER = 'def set_confined_env_hooks('
 UV = agent_guard.OWNER_HOME / '.local/bin/uv'
@@ -35,7 +35,7 @@ AUDIT_FILE = ROOT / 'state/packet-relay/promotions.jsonl'
 
 
 def parse_version(text):
-    """x.y.z 만 허용한다. 셸 메타문자나 접미사는 버전이 아니다."""
+    """Only x.y.z is allowed. A shell metacharacter or a suffix is not a version."""
     parts = str(text).split('.')
     if len(parts) != 3 or not all(part.isdigit() for part in parts):
         raise agent_guard.GuardError('version must be plain x.y.z, got ' + repr(str(text))[:40])
@@ -49,7 +49,7 @@ def fetch_json(url):
 
 
 def check_release(version, current, fetch=fetch_json):
-    """PyPI 존재·게시자·버전 순서를 검사하고 파일 목록(이름·URL·sha256)을 돌려준다."""
+    """Check existence on PyPI, the publisher and the version ordering, and return the file list (name, URL, sha256)."""
     requested, pinned = parse_version(version), parse_version(current)
     if requested <= pinned:
         raise agent_guard.GuardError('requested ' + version + ' is not newer than the pinned ' + current)
@@ -80,10 +80,10 @@ def fetch_bytes(url):
 
 
 def download_verified_wheel(info, fetch_bytes=fetch_bytes, directory=None):
-    """provenance 를 검사한 바로 그 wheel 을 받아 sha256 을 대조한 뒤 로컬 경로를 돌려준다.
+    """Download the exact wheel whose provenance was checked, compare its sha256 and return the local path.
 
-    uv 가 PyPI 를 독립적으로 해석하면 검사한 파일과 설치되는 파일이 달라질 수 있다(리뷰 HIGH).
-    로컬 wheel 을 넘겨 설치하면 검증과 설치가 같은 바이트에 묶인다.
+    If uv resolves PyPI independently, the file that was checked and the file that gets installed can differ (review HIGH).
+    Installing by handing over a local wheel binds verification and installation to the same bytes.
     """
     wheels = [a for a in info['artifacts'] if a['filename'].endswith('.whl')]
     if len(wheels) != 1:
@@ -100,7 +100,7 @@ def download_verified_wheel(info, fetch_bytes=fetch_bytes, directory=None):
 
 
 def installed_package_dir():
-    """호스트 uv 도구의 packet_ask 패키지 디렉터리."""
+    """The packet_ask package directory of the host uv tool."""
     result = subprocess.run([str(agent_guard.PACKET_PYTHON), '-I', '-c', 'import packet_ask, os; print(os.path.dirname(packet_ask.__file__))'],
                             stdout=subprocess.PIPE, text=True, timeout=30)
     if result.returncode or not result.stdout.strip():
@@ -109,7 +109,7 @@ def installed_package_dir():
 
 
 def uv_install(version, wheel=None):
-    """호스트에 설치한다. wheel 이 주어지면 검증된 그 파일을, 아니면(롤백) PyPI 의 고정 버전을 쓴다."""
+    """Install on the host. If a wheel is given, use that verified file; otherwise (rollback) use the pinned version from PyPI."""
     parse_version(version)
     spec = str(wheel) if wheel is not None else 'packet-ask==' + version
     result = subprocess.run([str(UV), 'tool', 'install', spec, '--force', '--refresh'],
@@ -119,7 +119,7 @@ def uv_install(version, wheel=None):
 
 
 def run_guard_tests():
-    """가드 전체 스위트. 승격은 이 결과에 걸려 있다."""
+    """The full guard suite. The promotion hangs on this result."""
     result = subprocess.run(['/usr/bin/python3', '-m', 'unittest', 'discover', '-s', 'tests'], cwd=str(ROOT),
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900)
     return result.returncode == 0 and '\nOK' in result.stdout
@@ -138,7 +138,7 @@ def snapshot(package_dir, destination):
 
 
 def changed_adapter_files(before, after):
-    """어댑터 파일 중 바뀐 것과, 훅 표면이 사라졌으면 그 사실을 이름으로 돌려준다."""
+    """Return which adapter files changed and, if the hook surface has disappeared, that fact as a name."""
     changed = [name for name in ADAPTER_FILES
                if not (after / name).is_file() or (before / name).read_bytes() != (after / name).read_bytes()]
     if (after / 'paths.py').is_file() and HOOK_MARKER not in (after / 'paths.py').read_text():
@@ -147,7 +147,7 @@ def changed_adapter_files(before, after):
 
 
 def write_pin(state_file, version):
-    """고정 버전을 임시 파일에 쓴 뒤 rename 한다. unlink→쓰기 사이에 파일이 없는 창을 없앤다."""
+    """Write the pinned version to a temporary file and then rename it. This removes the window between unlink and write in which the file does not exist."""
     temporary = state_file.with_name(state_file.name + '.tmp')
     if temporary.exists():
         temporary.unlink()
@@ -157,7 +157,7 @@ def write_pin(state_file, version):
 
 def promote(version, fetch=fetch_json, install=uv_install, run_tests=run_guard_tests, install_skills=reinstall_skills,
             package_dir=None, state_file=None, audit_file=AUDIT_FILE, fetch_bytes=fetch_bytes):
-    """승격 절차 전체. 설치 이후 어떤 실패든 이전 버전 재설치·고정 복원 뒤 GuardError 를 낸다."""
+    """The whole promotion procedure. Any failure after installation reinstalls the previous version and restores the pin, then raises GuardError."""
     state_file = Path(state_file) if state_file else agent_guard.PACKET_ASK_VERSION_FILE
     current = json.loads(state_file.read_text())['version']
     info = check_release(version, current, fetch=fetch)
@@ -176,7 +176,7 @@ def promote(version, fetch=fetch_json, install=uv_install, run_tests=run_guard_t
                 raise agent_guard.GuardError('guard test suite failed on ' + version + '; reinstalled ' + current + '.')
             install_skills()
         except BaseException as problem:
-            # 설치 이후의 모든 실패는 같은 롤백을 탄다. 테스트 시간 초과·파일 오류·스킬 설치 실패도 포함.
+            # Every failure after installation takes the same rollback, including a test timeout, a file error or a failed skill install.
             write_pin(state_file, current)
             install(current)
             outcome = 'refused-adapter-changed' if 'adapter surface changed' in str(problem) else 'rolled-back-' + type(problem).__name__

@@ -1,20 +1,21 @@
-// Kimi Code 전용 NODE_OPTIONS 프리로드. 격리 안에서 디렉터리 감시가 프로세스를 죽이는 것을 막는다.
+// NODE_OPTIONS preload for Kimi Code only. Stops directory watching from killing the process inside the confinement.
 //
-// 왜 필요한가. libuv 는 macOS 에서 디렉터리 fs.watch 를 전부 FSEvents 로 구현하고, FSEvents 는
-// mach 서비스 `com.apple.FSEvents` 를 요구한다. Seatbelt 가 이를 거부하면 스트림 시작이 실패하며
-// libuv 는 그 실패를 비동기 EMFILE 로 보고한다(파일 서술자 고갈이 아니다). Kimi 가 쓰는 chokidar 의
-// 내부 FSWatcher 에는 error 리스너가 없어 그 EMFILE 이 처리되지 않은 'error' 이벤트로 프로세스를 죽인다.
+// Why it is needed. On macOS libuv implements every directory fs.watch with FSEvents, and FSEvents requires
+// the mach service `com.apple.FSEvents`. When Seatbelt denies it, starting the stream fails and libuv reports
+// that failure as an asynchronous EMFILE (it is not file descriptor exhaustion). The internal FSWatcher of the
+// chokidar that Kimi uses has no error listener, so that EMFILE kills the process as an unhandled 'error' event.
 //
-// 왜 FSEvents 를 허용하지 않는가. 실측(2026-09-16)으로 샌드박스 클라이언트가 FSEvents 를 쓰면 읽기 거부된
-// 경로(Chrome 캐시, 다른 앱 임시 파일 등)의 파일 이름 변경 이벤트까지 받는다. fseventsd 는 클라이언트의
-// 샌드박스 경계로 걸러 주지 않으므로 사용자 활동의 메타데이터가 샌다. 대신 chokidar 는 stat 폴링
-// (`CHOKIDAR_USEPOLLING=1`, 감독자가 설정)으로 실제 변경을 감지하고, 여기서는 디렉터리 fs.watch 만
-// 조용한 감시자로 바꾼다. 파일 단위 fs.watch 는 kqueue 라 샌드박스에서도 동작하므로 원본을 그대로 쓴다.
+// Why FSEvents is not allowed. Measured (2026-09-16): when a sandboxed client uses FSEvents it also receives file
+// name change events for read-denied paths (the Chrome cache, temporary files of other apps, and so on). fseventsd
+// does not filter by the sandbox boundary of the client, so metadata about user activity leaks. Instead chokidar
+// detects the real changes through stat polling (`CHOKIDAR_USEPOLLING=1`, set by the supervisor), and here only the
+// directory fs.watch is turned into an inert watcher. Per-file fs.watch uses kqueue and works in the sandbox, so the
+// original is kept for it.
 //
-// 범위. NODE_OPTIONS 는 감독자 node 와 에이전트가 띄우는 다른 node 도구에도 상속된다. 그쪽 감시를 조용히
-// 무력화하면 오진을 낳으므로(리뷰 MEDIUM), `process.execPath` 가 감독자가 넘긴 Kimi 복제본 경로
-// (`AGENT_GUARD_KIMI_BINARY`)와 같을 때만 바꾼다. 다른 프로세스에서는 아무것도 하지 않는다.
-// 여기에 부수 효과(파일·네트워크·출력)를 넣지 말 것.
+// Scope. NODE_OPTIONS is also inherited by the supervisor node and by other node tools the agent launches. Quietly
+// disabling their watching would cause misdiagnoses (review MEDIUM), so it is replaced only when `process.execPath`
+// equals the Kimi copy path handed over by the supervisor (`AGENT_GUARD_KIMI_BINARY`). In any other process it does
+// nothing. Do not add side effects (file, network, output) here.
 'use strict';
 const fs = require('node:fs');
 const { EventEmitter } = require('node:events');
@@ -22,7 +23,7 @@ const { EventEmitter } = require('node:events');
 if (process.env.AGENT_GUARD_KIMI_BINARY && process.execPath === process.env.AGENT_GUARD_KIMI_BINARY) {
   const originalWatch = fs.watch;
 
-  /** 이벤트를 내지 않는 감시자. close 는 한 번만 'close' 를 내고, AbortSignal 은 close 로 이어진다. */
+  /** A watcher that emits no events. close emits 'close' only once, and an AbortSignal leads to close. */
   class InertWatcher extends EventEmitter {
     constructor(signal) {
       super();
@@ -44,7 +45,7 @@ if (process.env.AGENT_GUARD_KIMI_BINARY && process.execPath === process.env.AGEN
     unref() { return this; }
   }
 
-  /** 감시 대상이 디렉터리인지. 확인할 수 없으면 원본 fs.watch 에 맡긴다(그쪽이 오류를 낸다). */
+  /** Whether the watch target is a directory. When it cannot be determined, leave it to the original fs.watch (that one raises the error). */
   function isDirectory(target) {
     try {
       return fs.statSync(target).isDirectory();

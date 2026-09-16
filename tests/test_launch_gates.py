@@ -1,8 +1,8 @@
-"""브로커 리스너 조회(netstat)와 AutoClaw 실행 단계 영수증의 회귀.
+"""Regression for broker listener lookup (netstat) and the AutoClaw launch-stage receipts.
 
-lsof 는 모든 프로세스의 fd 를 훑어 JVM 같은 큰 프로세스가 있으면 수십 초가 걸릴 수 있다. netstat 은 커널 테이블을
-바로 읽는다. 큰 워크스페이스(파일 90만 개)의 하드링크 검사는 25초가 걸리므로 AutoClaw 쪽 핸드셰이크 한도를
-설치기가 3분으로 올린다.
+lsof scans the fds of every process, so it can take tens of seconds when a large process such as a JVM is present. netstat reads
+the kernel table directly. The hard-link check of a large workspace (900,000 files) takes 25 seconds, so the installer raises the
+AutoClaw-side handshake limit to 3 minutes.
 """
 import json
 import os

@@ -1,4 +1,4 @@
-"""Token Plan 사용량 CLI(bl)를 격리해서 돌리는 usage 모드 회귀."""
+"""Regression for usage mode, which runs the Token Plan usage CLI (bl) in isolation."""
 import json
 from pathlib import Path
 import sys
@@ -9,7 +9,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import agent_guard as g
-import usage_cli
+from adapters import usage_cli
 
 
 class ProfileTests(unittest.TestCase):
@@ -39,7 +39,7 @@ class WiringTests(unittest.TestCase):
         def fake_call(command, **kwargs):
             self.host_calls.append(dict(kwargs, command=command))
             return 0
-        # 실제 격리 홈에 bl 이 설치돼 있지 않아도 배선을 검사할 수 있도록 합성 진입 파일을 쓴다.
+        # Write a synthetic entry file so the wiring can be checked even when bl is not installed in the real isolated home.
         self.entry_dir = tempfile.TemporaryDirectory(prefix='usage-wiring-', dir=Path.home())
         entry = Path(self.entry_dir.name) / 'bailian-cli/dist/bailian.mjs'
         entry.parent.mkdir(parents=True)
@@ -71,19 +71,19 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(self.host_calls, [])
 
     def test_query_carries_the_host_time_zone(self):
-        """샌드박스는 zoneinfo 를 못 읽어 UTC 로 찍혔다. TZ 이름만 넘기면 Node 가 내장 ICU 로 처리한다."""
+        """The sandbox cannot read zoneinfo, so it printed UTC. Passing just the TZ name lets Node handle it with the built-in ICU."""
         self.assertEqual(g.main(['usage']), 0)
         extra = self.calls[0].get('extra_env') or {}
         self.assertEqual(extra.get('TZ'), usage_cli.host_time_zone())
         self.assertRegex(usage_cli.host_time_zone(), r'^[A-Za-z_]+/[A-Za-z_]+$|^UTC$')
 
     def test_query_suppresses_node_experimental_warnings(self):
-        """bl 이 실행마다 UNDICI-EHPA 경고 두 줄을 찍어 결과를 가렸다."""
+        """bl printed two UNDICI-EHPA warning lines on every run, obscuring the result."""
         self.assertEqual(g.main(['usage']), 0)
         self.assertIn('--no-warnings', (self.calls[0].get('extra_env') or {}).get('NODE_OPTIONS', ''))
 
     def test_expired_console_session_points_at_our_login_command(self):
-        """bl 은 `bl auth login --console` 을 권하지만 격리 홈에 저장되려면 token-usage login 이어야 한다."""
+        """bl recommends `bl auth login --console`, but it must be token-usage login for it to be saved in the isolated home."""
         import io
         with patch.object(g, 'run_confined', lambda *a, **k: 3), patch('sys.stderr', new_callable=io.StringIO) as err:
             self.assertEqual(g.main(['usage']), 3)

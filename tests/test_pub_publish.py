@@ -1,4 +1,4 @@
-"""safecode 에서 dart pub publish 가 되도록 pub.dev 자격 증명을 허용 워크스페이스에만 연결하는 회귀."""
+"""Regression that wires pub.dev credentials only into allowed workspaces so that dart pub publish works under safecode."""
 import json
 import os
 from pathlib import Path
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import agent_guard as g
 
-CREDENTIAL_PATH = 'dart/pub-credentials.json'  # $XDG_CONFIG_HOME 아래
+CREDENTIAL_PATH = 'dart/pub-credentials.json'  # Under $XDG_CONFIG_HOME.
 
 
 class GrantTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class LinkTests(unittest.TestCase):
             g.link_pub_credentials(config_home, self.source)
 
     def test_sandbox_can_read_and_refresh_the_linked_credentials(self):
-        """pub 은 토큰 갱신 시 같은 파일을 제자리에서 다시 쓴다. 심볼릭 링크였다면 EPERM 이었다."""
+        """On token refresh pub rewrites the same file in place. Had it been a symbolic link, this would have been EPERM."""
         work = Path(self.tmp.name) / 'work'; work.mkdir()
         (work / 'p.sh').write_text('f="$XDG_CONFIG_HOME/' + CREDENTIAL_PATH + '"; cat "$f"; printf \'{"refreshed": true}\' > "$f" && echo WROTE || echo WRITE_DENIED\n')
         with tempfile.TemporaryFile() as out:

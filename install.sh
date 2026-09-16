@@ -20,7 +20,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 umask 077
-mkdir -p "$TARGET" "$BIN" "$TARGET/runtime" "$TARGET/native" "$TARGET/tests" "$TARGET/vendor"
+mkdir -p "$TARGET" "$BIN" "$TARGET/runtime" "$TARGET/native" "$TARGET/tests" "$TARGET/vendor" "$TARGET/adapters"
 chmod 700 "$TARGET"
 
 # 1. Code. Only reviewed source files; state/ and config.json are left alone.
@@ -28,6 +28,7 @@ for file in "$REPO"/*.py "$REPO"/*.mjs "$REPO"/*.cjs "$REPO"/*.swift; do
   cp "$file" "$TARGET/"
 done
 cp "$REPO"/tests/*.py "$TARGET/tests/"
+cp "$REPO"/adapters/*.py "$TARGET/adapters/"
 cp "$REPO"/native/SafeIcon.icns "$TARGET/native/"
 cp "$REPO"/runtime/package.json "$REPO"/runtime/package-lock.json "$TARGET/runtime/"
 rsync -a --exclude __pycache__ "$REPO/vendor/" "$TARGET/vendor/"
@@ -74,7 +75,7 @@ agent-guard installed to $TARGET
   wrappers:  $BIN/{agent-guard,safecode,opencode-safe,safekimi,token-usage}
 Next steps:
   1. agent-guard doctor                       # verify runtime, baselines, integrations
-  2. python3 configure_existing.py --authorized-live-settings   # import OpenCode credentials (allowlisted providers only)
+  2. python3 adapters/configure_existing.py --authorized-live-settings   # import OpenCode credentials (allowlisted providers only)
   3. cd <project> && safecode                 # or safekimi
 Run the test suite from $TARGET: /usr/bin/python3 -m unittest discover -s tests
 EOF

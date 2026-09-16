@@ -1,8 +1,9 @@
-"""JVM/Gradle 프로젝트(kartograph)가 격리 안에서 빌드·테스트되도록 하는 조건의 회귀.
+"""Regression for the conditions that let a JVM/Gradle project (kartograph) build and test inside the isolation.
 
-실측(2026-09-15): JVM 은 `user.home` 을 $HOME 이 아니라 계정 DB 에서, `java.io.tmpdir` 을 $TMPDIR 이 아니라 Darwin
-임시 디렉터리에서 얻어 둘 다 닫힌 경로에 쓴다. Gradle 은 데몬·파일 잠금 핸들러·Kotlin 데몬·테스트 워커가 임의 루프백
-포트로 통신하므로 워크스페이스별 옵트인으로 루프백을 열어야 한다(Seatbelt 는 포트 범위를 받지 않는다).
+Measured (2026-09-15): the JVM takes `user.home` from the account DB rather than $HOME, and `java.io.tmpdir` from the Darwin
+temporary directory rather than $TMPDIR, so it writes to closed paths in both cases. In Gradle the daemon, the file-lock handler,
+the Kotlin daemon and the test workers communicate over arbitrary loopback ports, so loopback must be opened by per-workspace
+opt-in (Seatbelt does not accept port ranges).
 """
 import json
 from pathlib import Path
@@ -70,12 +71,12 @@ class LoopbackGrantTests(unittest.TestCase):
         env = {'HOME': '/tmp/h', 'TMPDIR': '/tmp/h/tmp', 'PUB_CACHE': '/tmp/h/.pub-cache', 'AGENT_GUARD_LOOPBACK_ALL': '1', 'XDG_CONFIG_HOME': '/tmp/h/.config'}
         policy = {'network': {'allowedDomains': [], 'allowLocalBinding': True}, 'filesystem': {'allowRead': [], 'allowWrite': [], 'denyWrite': []}}
         text = notice.render_environment_notice(Path('/tmp/w'), Path('/tmp/h'), env, policy)
-        self.assertIn('루프백', text)
-        self.assertIn('다른 로컬 서비스', text)
+        self.assertIn('loopback fully open', text)
+        self.assertIn('Other local services of the same user', text)
         self.assertIn('JAVA_HOME', text)
 
     def test_child_can_bind_and_connect_random_loopback_ports_when_granted(self):
-        """Gradle 이 하는 일: 임의 포트에 바인드하고 그 포트로 자기 자신에게 접속한다."""
+        """What Gradle does: bind to an arbitrary port and connect to itself on that port."""
         script = ('import socket\n'
                   's = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(1); port = s.getsockname()[1]\n'
                   'c = socket.socket(); c.settimeout(5); c.connect(("127.0.0.1", port)); print("LOOPBACK_OK", port > 0)\n'
@@ -100,18 +101,18 @@ class LoopbackGrantTests(unittest.TestCase):
                      patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \
                      patch.object(g, 'loopback_grant', lambda workspace: True):
                     self.assertEqual(g.main(['zcode-backend', 'app-server', '--stdio']), 0)
-                    from riskgate_bridge import riskgate_decision  # noqa: F401  (모듈 존재 확인)
+                    from riskgate_bridge import riskgate_decision  # noqa: F401  (check that the module exists)
             finally:
                 os.chdir(previous)
         self.assertTrue(captured['zcode']['loopback_all'])
 
 
 class GradleKeystoreGrantTests(unittest.TestCase):
-    """Gradle TestKit·configuration-cache 는 무결성 검증용 `gradle.keystore` 를 워크스페이스 안 build 아래에 만든다.
+    """Gradle TestKit and configuration-cache create a `gradle.keystore` for integrity verification under build inside the workspace.
 
-    그 파일명이 SECRET_NAMES 의 `*.keystore` 에 걸려 워크스페이스 안이어도 쓰기가 막혔다(오탐). 워크스페이스별
-    옵트인으로 파일명 `gradle.keystore` 만 예외한다. 진짜 서명 키스토어(release.keystore·*.jks·debug.keystore)와
-    다른 시크릿(.env 등)은 계속 보호된다.
+    That filename matched `*.keystore` in SECRET_NAMES, so writing was blocked even inside the workspace (false positive). A
+    per-workspace opt-in exempts only the filename `gradle.keystore`. Real signing keystores (release.keystore, *.jks,
+    debug.keystore) and other secrets (.env and so on) remain protected.
     """
     def test_grant_is_per_workspace_and_off_by_default(self):
         with tempfile.TemporaryDirectory(prefix='ks-', dir=Path.home()) as tmp:
@@ -126,9 +127,10 @@ class GradleKeystoreGrantTests(unittest.TestCase):
                 self.assertFalse(g.gradle_keystore_grant(project))
 
     def test_run_confined_signals_keystore_root_only_when_granted(self):
-        """옵트인 시에만 sandbox_runner 에 워크스페이스 realpath 를 넘긴다(그 안 gradle.keystore 만 re-allow).
+        """Pass the workspace realpath to sandbox_runner only on opt-in (re-allowing only gradle.keystore within it).
 
-        policy 의 denyWrite 는 그대로다(다른 keystore·시크릿 보호). 예외는 SBPL append 로만 하므로 env 신호가 전부다.
+        The policy's denyWrite is unchanged (protecting other keystores and secrets). The exception is made only by SBPL append,
+        so the env signal is all there is.
         """
         captured = {}
         def fake_call(argv, **kwargs):
@@ -141,7 +143,7 @@ class GradleKeystoreGrantTests(unittest.TestCase):
             self.assertEqual(captured['env'].get('AGENT_GUARD_GRADLE_KEYSTORE_ROOT'), str(work.resolve()))
 
     def test_granted_workspace_writes_gradle_keystore_but_not_other_secrets(self):
-        """실 Seatbelt: 더 구체적인 allow 가 `*.keystore` deny 를 이겨 gradle.keystore 만 열린다."""
+        """Real Seatbelt: the more specific allow beats the `*.keystore` deny, so only gradle.keystore is opened."""
         work = Path(tempfile.mkdtemp(prefix='ks-real-', dir=Path.home())); self.addCleanup(lambda: __import__('shutil').rmtree(work, ignore_errors=True))
         nested = 'gradle-plugin/build/tmp/test/work/.gradle-test-kit/caches/9.6.1/cc-keystore'
         script = (
@@ -168,7 +170,7 @@ class GradleKeystoreGrantTests(unittest.TestCase):
         self.assertIn('ENV_DENIED', text)
 
     def test_gradle_keystore_denied_without_grant(self):
-        """옵트인 없으면 워크스페이스 안 gradle.keystore 도 여전히 막힌다(현행 보호 유지)."""
+        """Without the opt-in, gradle.keystore inside the workspace is still blocked (current protection preserved)."""
         work = Path(tempfile.mkdtemp(prefix='ks-nogrant-', dir=Path.home())); self.addCleanup(lambda: __import__('shutil').rmtree(work, ignore_errors=True))
         script = (
             'import os\n'

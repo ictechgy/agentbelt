@@ -1,8 +1,8 @@
-"""AutoClaw(z.ai) 코딩 런타임을 Zcode 백엔드와 같은 격리로 감싸는지 확인하는 회귀.
+"""Regression checking that the AutoClaw (z.ai) coding runtime is wrapped in the same isolation as the Zcode backend.
 
-AutoClaw 는 zcode-runtime 플러그인 설정의 `command` 를 우리 런처로 바꾸면 번들 Zcode CLI 대신
-런처를 띄운다(`command version` 프로브 → `command agent-server`, cwd=워크스페이스). 모델 자격 증명은
-게이트웨이의 루프백 모델 브로커가 들고 있으므로 자식에게는 브로커 포트 하나만 열어 준다.
+When the `command` in the zcode-runtime plugin settings is changed to our launcher, AutoClaw starts the launcher instead of the
+bundled Zcode CLI (a `command version` probe, then `command agent-server`, with cwd=workspace). The model credentials are held by
+the gateway's loopback model broker, so the child is given only the one broker port.
 """
 import hashlib
 import json
@@ -22,7 +22,7 @@ BROKER_ENV = {'AUTOCLAW_MODEL_BROKER_OPENAI_BASE_URL': 'http://127.0.0.1:43210/i
 
 
 def synthetic_autoclaw(root, app_version='1.18.5', cli_version='0.15.2', binary=b'synthetic zcode'):
-    """가짜 AutoClaw 앱 번들과 그에 맞는 가드 프로필·기준선을 만든다. 실제 앱은 건드리지 않는다."""
+    """Create a fake AutoClaw app bundle with a matching guard profile and baseline. The real app is left untouched."""
     import plistlib
     app = root / 'AutoClaw.app'
     (app / 'Contents/Resources/zcode/darwin-arm64').mkdir(parents=True)
@@ -66,7 +66,7 @@ class BrokerPortTests(unittest.TestCase):
                                     'AUTOCLAW_MODEL_BROKER_ANTHROPIC_BASE_URL': 'http://127.0.0.1:99999/internal/model-proxy/anthropic/v1'})
 
     def test_broker_listener_must_belong_to_autoclaw(self):
-        """포트 모양만 맞다고 열지 않는다. 그 포트를 듣는 프로세스가 AutoClaw 앱 안의 실행 파일이어야 한다."""
+        """Do not open a port just because its shape matches. The process listening on that port must be an executable inside the AutoClaw app."""
         import socket
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); listener.listen(1)
@@ -81,13 +81,13 @@ class BrokerPortTests(unittest.TestCase):
             with patch.object(g, 'listener_executables', lambda port: ['/Applications/AutoClaw.app/../Evil.app/x', '/Applications/AutoClaw.app/Contents/Resources/node/darwin-arm64/node']):
                 with self.assertRaises(g.GuardError):
                     g.verify_broker_owner(port)
-            # 실행 파일 경로를 못 구한 리스너가 하나라도 있으면 닫힌다(빈 경로를 조용히 버리지 않는다).
+            # If even one listener has no resolvable executable path, it closes (an empty path is not silently discarded).
             with patch.object(g, 'listener_executables', lambda port: ['/Applications/AutoClaw.app/Contents/Resources/node/darwin-arm64/node', '']):
                 with self.assertRaises(g.GuardError):
                     g.verify_broker_owner(port)
 
     def test_listener_query_covers_every_address_and_keeps_unresolved_pids(self):
-        """lsof 는 주소 필터 없이 포트 전체를 보고, proc_pidpath 실패는 빈 문자열로 남겨 게이트가 닫히게 한다."""
+        """lsof looks at the whole port without an address filter, and a proc_pidpath failure is left as an empty string so the gate closes."""
         import socket
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0)); listener.listen(1)
@@ -121,7 +121,7 @@ class BinaryVerificationTests(unittest.TestCase):
                     g.verify_autoclaw_binary()
 
     def test_manifest_cannot_redirect_the_hash_to_another_file(self):
-        """매니페스트의 file 항목이 다른 파일을 가리켜도 실행될 바이너리 자체를 대조해야 한다(리뷰 CRITICAL)."""
+        """Even when the manifest's file entry points at a different file, the binary that will actually run must be the one checked (review CRITICAL)."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = synthetic_autoclaw(root)
@@ -138,7 +138,7 @@ class BinaryVerificationTests(unittest.TestCase):
                     g.verify_autoclaw_binary()
 
     def test_staged_copy_is_hashed_and_guard_owned(self):
-        """실행 파일은 가드 소유 복제본이며 복제 뒤 해시를 다시 대조한다(검증→실행 사이 교체 방지)."""
+        """The executable is a guard-owned clone, and the hash is checked again after cloning (preventing replacement between verification and execution)."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = synthetic_autoclaw(root)
@@ -149,7 +149,7 @@ class BinaryVerificationTests(unittest.TestCase):
                 self.assertEqual(staged.read_bytes(), b'synthetic zcode')
                 self.assertTrue(str(staged).startswith(str(root / 'state/autoclaw-runtime/')))
                 self.assertEqual(staged.stat().st_mode & 0o777, 0o500)
-                # 실행마다 전용 디렉터리라 동시 실행이 서로의 복제본을 지우지 못한다.
+                # A dedicated directory per run means concurrent runs cannot delete each other's clones.
                 other = g.stage_autoclaw_binary()
                 self.assertNotEqual(staged.parent, other.parent)
                 self.assertTrue(staged.exists())
@@ -161,12 +161,12 @@ class BinaryVerificationTests(unittest.TestCase):
                 self.assertEqual(staged.read_bytes(), b'synthetic zcode')
                 leftovers = [p for p in (root / 'state/autoclaw-runtime').iterdir() if p != staged.parent]
                 self.assertEqual(leftovers, [])
-                # 소유자가 죽은(SIGTERM 으로 정리 없이 끝난) 전용 디렉터리는 다음 스테이징이 회수한다.
+                # A dedicated directory whose owner died (ended by SIGTERM without cleanup) is reclaimed by the next staging.
                 dead = root / 'state/autoclaw-runtime/launch-999999999-dead'; dead.mkdir(); (dead / 'zcode').write_bytes(b'old')
                 source.write_bytes(b'synthetic zcode')
                 fresh = g.stage_autoclaw_binary()
                 self.assertFalse(dead.exists())
-                self.assertTrue(staged.exists())  # 살아 있는 소유자(현재 프로세스)의 것은 남는다
+                self.assertTrue(staged.exists())  # One belonging to a live owner (the current process) remains.
                 g.discard_staged_binary(fresh); g.discard_staged_binary(staged)
 
     def test_fails_closed_without_a_recorded_baseline(self):
@@ -181,7 +181,7 @@ class BinaryVerificationTests(unittest.TestCase):
 
 class LauncherTests(unittest.TestCase):
     def setUp(self):
-        # 테스트가 실제 `state/runtime/autoclaw-launches.log`(사고 판독 근거)에 줄을 남기면 안 된다. 헬퍼가 여기로 돌린다.
+        # Tests must not leave lines in the real `state/runtime/autoclaw-launches.log` (the basis for incident reading). The helper redirects here.
         self.logged_stages = []
 
     def run_backend(self, argv, env, captured, broker_owner=lambda port: None):
@@ -218,11 +218,11 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(out.getvalue().split()[-1], '0.15.2')
         self.assertNotIn('command', captured)
-        # 프로브까지 기록하면 로그가 "python-start 뒤 started 없음" 으로 읽혀 사고 판독을 망친다.
+        # Recording the probe too would make the log read as "python-start with no started", ruining incident reading.
         self.assertEqual(self.logged_stages, [])
 
     def test_agent_server_call_detection_matches_the_launcher_shell(self):
-        """셸 런처(`[ "$1" = agent-server ]`)와 같은 기준이어야 `sh-start` 없는 `python-start` 를 셸 손실로 오독하지 않는다."""
+        """The criterion must match the shell launcher (`[ "$1" = agent-server ]`) so that a `python-start` without `sh-start` is not misread as a lost shell."""
         self.assertTrue(g.is_autoclaw_agent_server_call(['autoclaw-backend', 'agent-server']))
         self.assertTrue(g.is_autoclaw_agent_server_call(['autoclaw-backend', 'agent-server', '--extra']))
         for arguments in [['autoclaw-backend', 'version'], ['autoclaw-backend', '--', 'agent-server'], ['autoclaw-backend'], ['zcode-backend', 'agent-server'], []]:
@@ -239,7 +239,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(sorted(captured['read_only_workspace_paths']), ['.agents/mcp.json', '.zcode', 'zcode.json'])
         self.assertEqual(captured['extra_env']['AGENT_GUARD_BROKER_PORT'], '43210')
         self.assertEqual(captured['args'][0], ['pub.dev:443'])
-        # 저장소 범위 GitHub 토큰은 safecode·Zcode Safe 와 같이 주입한다(2026-09-15 사용자 결정). yolo 라 push 도 확인 없이 된다.
+        # A repository-scoped GitHub token is injected as in safecode and Zcode Safe (user decision, 2026-09-15). Being yolo, push also goes through without confirmation.
         self.assertTrue(captured['github'])
         self.assertIn('push', captured['notice_extra'])
         self.assertNotIn(str(g.AUTOCLAW_APP), [str(p) for p in captured['extra_reads']])
@@ -259,7 +259,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(env['ZCODE_HOME'], str(home / '.zcode'))
 
     def test_agent_server_discards_the_staged_copy_and_writes_a_receipt_on_failure(self):
-        """실패해도 복제본을 치우고 exit 영수증을 남긴다(AutoClaw 가 죽은 세션을 살아 있다고 보지 않게)."""
+        """Even on failure, clean up the clone and leave an exit receipt (so AutoClaw does not see a dead session as alive)."""
         receipts = {}
         def failing_run_confined(*args, **kwargs):
             raise g.GuardError('synthetic launch failure')
@@ -291,8 +291,8 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn('command', captured)
 
     def test_agent_server_records_each_stage_before_the_sandbox_starts(self):
-        """핸드셰이크 한도 안에 못 뜨면 어느 단계에서 멈췄는지 알 수 있어야 한다(isthmus 30초 침묵 사고).
-        `python-start` 는 argparse 이전에 남겨 런처 셸 `sh-start` 와 `started` 사이(셔틀·인터프리터 기동)를 가른다."""
+        """If it does not come up within the handshake limit, it must be possible to tell which stage it stopped at (the isthmus 30-second silence incident).
+        `python-start` is left before argparse to separate the launcher shell's `sh-start` from `started` (the shuttle and interpreter startup)."""
         import argparse
         stages = []
         logged = []
@@ -321,7 +321,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(logged, [stage for stage in stages if stage != 'argparse'])
 
     def test_launch_log_keeps_one_line_per_stage_across_attempts(self):
-        """마지막 시도가 덮어쓰는 영수증과 달리, 시도별 기록이 남아야 실패 지점을 나중에 볼 수 있다."""
+        """Unlike the receipt that the last attempt overwrites, a per-attempt record must remain so the failure point can be seen later."""
         with tempfile.TemporaryDirectory(prefix='launchlog-', dir=Path.home()) as tmp:
             root = Path(tmp); (root / 'state').mkdir(mode=0o700)
             with patch.object(g, 'ROOT', root):
@@ -332,7 +332,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual((root / 'state/runtime/autoclaw-launches.log').stat().st_mode & 0o777, 0o600)
 
     def test_launch_log_rotation_keeps_the_recent_tail(self):
-        """200 KB 절단이 같은 기동의 `sh-start` 까지 지우면 "python-start 는 있는데 sh-start 없음" 으로 오독된다. 꼬리를 남긴다."""
+        """If the 200 KB truncation also erases the `sh-start` of the same startup, it is misread as "python-start present but sh-start missing". Keep the tail."""
         with tempfile.TemporaryDirectory(prefix='launchlog-', dir=Path.home()) as tmp:
             root = Path(tmp); (root / 'state/runtime').mkdir(parents=True, mode=0o700)
             log = root / 'state/runtime/autoclaw-launches.log'
@@ -349,7 +349,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(log.stat().st_mode & 0o777, 0o600)
 
     def test_launch_log_escapes_control_characters_in_cwd(self):
-        """cwd 의 개행이 레코드를 두 줄로 쪼개면 판독 도구가 가짜 단계를 본다. `python-start` 는 workspace_path 검사 이전에 기록된다."""
+        """If a newline in cwd splits the record into two lines, the reading tool sees a fake stage. `python-start` is recorded before the workspace_path check."""
         with tempfile.TemporaryDirectory(prefix='launchlog-', dir=Path.home()) as tmp:
             root = Path(tmp); (root / 'state').mkdir(mode=0o700)
             with patch.object(g, 'ROOT', root):
@@ -374,7 +374,7 @@ class LauncherTests(unittest.TestCase):
 
 class WorkspaceConfigLockTests(unittest.TestCase):
     def test_child_cannot_plant_workspace_zcode_config(self):
-        """워크스페이스 `.zcode/config.json`·`zcode.json` 은 훅을 끄거나 MCP 를 붙일 수 있어 자식이 만들지 못해야 한다."""
+        """The workspace `.zcode/config.json` and `zcode.json` can turn off hooks or attach MCP, so the child must not be able to create them."""
         with tempfile.TemporaryDirectory(prefix='wscfg-', dir=Path.home()) as tmp:
             script = ('mkdir -p .zcode && echo PLANT_DIR_OK || echo PLANT_DIR_DENIED; '
                       'echo x > zcode.json && echo PLANT_FILE_OK || echo PLANT_FILE_DENIED; '
@@ -409,7 +409,7 @@ class WorkspaceConfigLockTests(unittest.TestCase):
 
 class LoopbackBoundaryTests(unittest.TestCase):
     def test_child_reaches_only_the_broker_port(self):
-        """브로커 포트는 직접 연결되고, 같은 루프백의 다른 리스너에는 연결이 거부된다(정책이 포트 하나로 묶였는지 실측)."""
+        """The broker port connects directly, and connections to other listeners on the same loopback are refused (measuring whether the policy is bound to a single port)."""
         import socket, threading
         broker = socket.socket(); broker.bind(('127.0.0.1', 0)); broker.listen(5)
         other = socket.socket(); other.bind(('127.0.0.1', 0)); other.listen(5)
@@ -445,7 +445,7 @@ class LoopbackBoundaryTests(unittest.TestCase):
 
 class ShortTempDirTests(unittest.TestCase):
     def test_child_can_bind_a_unix_socket_under_a_short_tmpdir(self):
-        """번들 CLI 는 `$TMPDIR/znr-<uuid>.sock` 을 바인드한다. 격리 홈 tmp(88자)로는 sun_path 한도(104)를 넘어 EINVAL 로 죽었다."""
+        """The bundled CLI binds `$TMPDIR/znr-<uuid>.sock`. With the isolated home tmp (88 characters) it exceeded the sun_path limit (104) and died with EINVAL."""
         script = ('import os, socket, uuid; p = os.path.join(os.environ["TMPDIR"], "znr-" + str(uuid.uuid4()) + ".sock"); '
                   'print("TMPDIR_LEN", len(os.environ["TMPDIR"])); s = socket.socket(socket.AF_UNIX); s.bind(p); print("BIND_OK"); '
                   'open(os.path.join(os.environ["TMPDIR"], "note.txt"), "w").write("x"); print("WRITE_OK")')
@@ -462,7 +462,7 @@ class ShortTempDirTests(unittest.TestCase):
             self.assertFalse((ROOT / 'state/t' / hashlib.sha256(('autoclaw-test\0' + str(Path(tmp).resolve())).encode()).hexdigest()[:7]).exists())
 
     def test_relay_follows_the_short_tmpdir(self):
-        from packet_relay import PacketRelay
+        from adapters.packet_relay import PacketRelay
         with tempfile.TemporaryDirectory(prefix='relaytmp-', dir=Path.home()) as tmp:
             home = Path(tmp) / 'home'; home.mkdir()
             short = Path(tmp) / 't'; short.mkdir()
@@ -471,7 +471,7 @@ class ShortTempDirTests(unittest.TestCase):
             relay.prepare(home, env)
             self.assertEqual(relay.requests, short / 'packet-requests')
             self.assertTrue((short / 'packet-requests').is_dir())
-            # 결과·오류 파일도 그 디렉터리에 써져야 한다(격리 홈 기준 상대 경로를 요구하면 ValueError 로 중계가 죽는다).
+            # The result and error files must also be written in that directory (requiring a path relative to the isolated home kills the relay with ValueError).
             relay._write(relay.requests / 'r1.result.md', 'answer')
             self.assertEqual((short / 'packet-requests/r1.result.md').read_text(), 'answer')
             self.assertEqual(sorted(p.name for p in (short / 'packet-requests').iterdir()), ['r1.result.md'])
@@ -556,7 +556,7 @@ class RunnerBrokerProxyTests(unittest.TestCase):
 
 class InstallerTests(unittest.TestCase):
     def test_installer_points_the_plugin_at_the_launcher_and_keeps_everything_else(self):
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             root = home / 'guard'
@@ -579,7 +579,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(plugin['config']['command'], str(home / '.local/bin/autoclaw-zcode-safe'))
                 self.assertEqual(plugin['config']['args'], [])
                 self.assertEqual(sorted(plugin['config']['envPassthrough']), sorted(BROKER_ENV))
-                # 큰 워크스페이스의 하드링크 검사(25초)와 첫 기동이 기본 30초 핸드셰이크를 넘기므로 3분으로 올린다.
+                # The hard-link check of a large workspace (25 seconds) plus the first startup exceeds the default 30-second handshake, so raise it to 3 minutes.
                 self.assertEqual(plugin['config']['requestTimeoutMs'], 180000)
                 self.assertTrue(plugin['config']['runtimeEnabled'])
                 self.assertTrue(plugin['enabled'])
@@ -601,13 +601,13 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
                 self.assertEqual((root / 'state/backups').stat().st_mode & 0o777, 0o700)
                 self.assertEqual([p.name for p in state_dir.iterdir()], ['openclaw.json'])
-                # 다시 실행해도 같은 결과이고 백업이 늘지 않는다.
+                # Re-running gives the same result and does not add backups.
                 installer.main()
                 self.assertEqual(json.loads((state_dir / 'openclaw.json').read_text()), updated)
                 self.assertEqual(len(list((root / 'state/backups').glob('openclaw.json.*'))), 1)
 
     def test_installer_refuses_a_symlinked_or_missing_config(self):
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             root = home / 'guard'
@@ -648,7 +648,7 @@ class InstallerTests(unittest.TestCase):
         return home, root, app, state_dir
 
     def test_installer_refuses_a_foreign_or_linked_launcher(self):
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             launcher = home / '.local/bin/autoclaw-zcode-safe'
@@ -657,7 +657,7 @@ class InstallerTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     installer.main()
                 self.assertEqual(launcher.read_text(), '#!/bin/sh\necho foreign\n')
-                # 권한이 0700 이어도 본문이 이전 가드 런처가 아니면 교체하지 않는다(이전 런처 교체 경로의 경계).
+                # Even with 0700 permissions, do not replace it when the body is not a previous guard launcher (the boundary of the previous-launcher replacement path).
                 launcher.chmod(0o700)
                 with self.assertRaises(RuntimeError):
                     installer.main()
@@ -670,10 +670,11 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(victim.read_text(), 'keep')
 
     def test_launcher_logs_a_shell_stage_before_handing_over_to_python(self):
-        """isthmus 30초 침묵: 게이트웨이가 띄운 런처가 파이썬 첫 줄에도 못 닿았다. 셸 자체가 첫 증거를 남겨야
-        셸 기동·python3 셔틀·파이썬 기동 중 어디서 멈췄는지 가를 수 있다. pid 는 exec 로 이어지므로 파이썬 pid 와 같다."""
+        """The isthmus 30-second silence: the launcher started by the gateway did not even reach the first line of Python. The shell itself must
+        leave the first evidence so we can tell whether it stopped at shell startup, the python3 shuttle or Python startup. The pid carries
+        through exec, so it is the same as the Python pid."""
         import subprocess
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory(prefix='launcher-', dir=Path.home()) as tmp:
             home = Path(tmp); root = home / 'guard'; (root / 'state').mkdir(parents=True, mode=0o700)
             (root / 'agent_guard.py').write_text('import os, sys\nprint(os.getpid(), sys.argv[1:])\n')
@@ -691,19 +692,19 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(len(lines), 1)
             self.assertRegex(lines[0], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d pid=' + python_pid + ' stage=sh-start cwd=' + str(workspace) + '$')
             self.assertEqual(log.stat().st_mode & 0o777, 0o600)
-            # version 프로브는 한 턴에 여러 번 올 수 있어 기록하면 "python-start 없음" 으로 오독된다.
+            # The version probe can arrive several times in one turn, so recording it would be misread as "no python-start".
             subprocess.run(['/bin/sh', str(launcher), 'version'], cwd=str(workspace), capture_output=True, check=True)
             self.assertEqual(len(log.read_text().splitlines()), 1)
-            # 로그 자리에 링크가 있으면 쓰지 않고, 실행은 계속된다.
+            # If there is a link where the log goes, do not write, and execution continues.
             log.unlink(); victim = home / 'victim'; victim.write_text(''); os.symlink(str(victim), str(log))
             result = subprocess.run(['/bin/sh', str(launcher), 'agent-server'], cwd=str(workspace), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(victim.read_text(), '')
-            # FIFO 가 있으면 `>>` 가 읽는 쪽을 기다리며 exec 전에 멈춘다 — 증거를 남기기도 전에 30초 침묵이 된다. 건너뛰어야 한다.
+            # With a FIFO, `>>` waits for the reading side and stops before exec -- it becomes a 30-second silence before any evidence is left. It must be skipped.
             log.unlink(); os.mkfifo(str(log))
             result = subprocess.run(['/bin/sh', str(launcher), 'agent-server'], cwd=str(workspace), capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
-            # `state/runtime` 자체가 링크면 파이썬(private_dir)은 거부한다. 셸도 따라가 쓰지 않는다.
+            # If `state/runtime` itself is a link, Python (private_dir) refuses. The shell likewise does not follow and write.
             log.unlink(); (root / 'state/runtime').rmdir(); outside = home / 'outside'; outside.mkdir()
             os.symlink(str(outside), str(root / 'state/runtime'))
             result = subprocess.run(['/bin/sh', str(launcher), 'agent-server'], cwd=str(workspace), capture_output=True, text=True, timeout=5)
@@ -711,8 +712,8 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(list(outside.iterdir()), [])
 
     def test_installer_replaces_the_previous_guard_launcher_in_place(self):
-        """런처 본문이 바뀌면 재설치가 이전 가드 런처를 알아보고 교체해야 한다. 낯선 런처 거부는 그대로다."""
-        import install_autoclaw as installer
+        """When the launcher body changes, a reinstall must recognize and replace the previous guard launcher. Refusal of an unfamiliar launcher is unchanged."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             launcher = home / '.local/bin/autoclaw-zcode-safe'
@@ -725,8 +726,8 @@ class InstallerTests(unittest.TestCase):
                 self.assertNotEqual(launcher.read_text(), previous)
                 self.assertEqual(launcher.stat().st_mode & 0o777, 0o700)
                 self.assertEqual(sorted(p.name for p in launcher.parent.iterdir()), ['autoclaw-zcode-safe'])
-                # 게이트웨이가 교체 순간에 런처를 띄워도 빈 파일이나 부재를 보지 않도록 임시 파일 + rename 으로 바꾼다.
-                # 이전 실패가 남긴 임시 파일은 치우고 진행한다.
+                # Swap via a temporary file plus rename so that the gateway does not see an empty file or an absence even if it starts the launcher at the moment of replacement.
+                # Clean up a temporary file left by a previous failure and proceed.
                 launcher.write_text(previous); launcher.chmod(0o700)
                 stale = launcher.parent / '.autoclaw-zcode-safe.tmp'; stale.write_text('stale')
                 seen = []
@@ -738,14 +739,14 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(seen, [(True, previous)])
                 self.assertEqual(launcher.read_text(), installer.launcher_text())
                 self.assertFalse(stale.exists())
-                # 같은 본문이라도 권한이 열려 있으면 이전 런처로 인정하지 않는다.
+                # Even with the same body, do not accept it as the previous launcher when the permissions are open.
                 launcher.write_text(previous); launcher.chmod(0o755)
                 with self.assertRaises(RuntimeError):
                     installer.main()
                 self.assertEqual(launcher.read_text(), previous)
 
     def test_installer_refuses_a_world_writable_or_linked_bin_directory(self):
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             with self.installer_context(installer, home, root, app, state_dir):
@@ -761,7 +762,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(list(elsewhere.iterdir()), [])
 
     def test_installer_refuses_to_rebless_a_changed_binary_without_the_flag(self):
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             with self.installer_context(installer, home, root, app, state_dir):
@@ -780,8 +781,8 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(baseline['autoclaw']['zcodeSha256'], hashlib.sha256(b'updated zcode').hexdigest())
 
     def test_installer_can_deny_host_exec_for_the_outer_agent(self):
-        """AutoClaw 의 바깥 에이전트는 호스트 exec 를 승인 없이 돌린다. 옵션으로 이를 막아 코딩이 zcode 경로로만 가게 한다."""
-        import install_autoclaw as installer
+        """The outer agent of AutoClaw runs host exec without approval. An option blocks this so that coding goes only through the zcode path."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             (state_dir / 'openclaw.json').write_text(json.dumps({'plugins': {'entries': {}}, 'tools': {'exec': {'security': 'full', 'ask': 'off'}, 'deny': ['browser']}}))
@@ -789,14 +790,14 @@ class InstallerTests(unittest.TestCase):
                 installer.main(deny_host_exec=False)
                 tools = json.loads((state_dir / 'openclaw.json').read_text())['tools']
                 self.assertEqual(tools['exec'], {'security': 'full', 'ask': 'off'})
-                installer.main()  # 기본값이 차단이다(페일오픈 설치 금지).
+                installer.main()  # The default is to block (no fail-open install).
                 tools = json.loads((state_dir / 'openclaw.json').read_text())['tools']
                 self.assertEqual(tools['exec']['security'], 'deny')
                 self.assertEqual(sorted(tools['deny']), ['browser', 'exec', 'gateway', 'process'])
 
     def test_deny_host_exec_also_denies_per_agent_and_elevated(self):
-        """AutoClaw 의 원격 설정 새로고침이 전역 tools.exec.security 를 full 로 되돌린다. 에이전트별 deny 와 elevated 차단까지 넣어야 버틴다."""
-        import install_autoclaw as installer
+        """AutoClaw's remote settings refresh resets the global tools.exec.security to full. It only holds if per-agent deny and an elevated block are added as well."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             (state_dir / 'openclaw.json').write_text(json.dumps({
@@ -820,8 +821,8 @@ class InstallerTests(unittest.TestCase):
                                                                                  'token': 'SYNTHETIC', 'enabled': True}}}}}
 
     def test_discord_dm_mode_locks_every_account_to_the_given_users(self):
-        """DM 경로를 열 때는 본인 사용자 ID 만 허용 목록에 넣는다. 토큰·서버 정책은 그대로."""
-        import install_autoclaw as installer
+        """When opening the DM path, put only one's own user ID in the allowlist. The token and server policy are unchanged."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             (state_dir / 'openclaw.json').write_text(json.dumps(self.discord_config()))
@@ -840,8 +841,8 @@ class InstallerTests(unittest.TestCase):
                     installer.main(discord_users=['123456789012345678'], discord_dm=True)
 
     def test_discord_guild_mode_keeps_dm_disabled_and_locks_the_sender(self):
-        """비공개 서버 채널로 제어할 때: DM 은 계속 끄고, 서버 하나·보낸 사람 ID 하나(선택적으로 채널 하나)만 허용한다."""
-        import install_autoclaw as installer
+        """When controlling through a private server channel: keep DMs off, and allow only one server and one sender ID (optionally one channel)."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             (state_dir / 'openclaw.json').write_text(json.dumps(self.discord_config()))
@@ -868,8 +869,8 @@ class InstallerTests(unittest.TestCase):
                     installer.main(discord_users='123456789012345678', discord_guild='987654321098765432')
 
     def test_private_agent_workspace_moves_the_agent_off_the_repository(self):
-        """에이전트 워크스페이스가 저장소면 네이티브 read/write 가 호스트에서 저장소를 직접 만진다. 전용 폴더로 옮기고 메모를 심는다."""
-        import install_autoclaw as installer
+        """If the agent workspace is the repository, native read/write touches the repository directly on the host. Move it to a dedicated folder and plant a note."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             repo = home / 'Desktop/repo'; repo.mkdir(parents=True)
@@ -886,20 +887,20 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue((Path(expected) / 'TOOLS.md').is_file())
                 self.assertIn('zcode_run', (Path(expected) / 'TOOLS.md').read_text())
                 self.assertEqual(Path(expected).stat().st_mode & 0o777, 0o700)
-                # 저장소는 건드리지 않는다.
+                # Do not touch the repository.
                 self.assertEqual(list(repo.iterdir()), [])
                 with self.assertRaises(RuntimeError):
                     installer.main(private_agent_workspace='ghost')
-                installer.main(private_agent_workspace='programmer')  # 재실행 안전
-                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('실행 규칙 (agent-guard)'), 1)
-                # 'zcode_run' 이라는 낱말만 있는 메모는 우리 규칙이 아니다: 규칙 절을 붙인다.
+                installer.main(private_agent_workspace='programmer')  # safe to re-run
+                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('Execution rules for this environment (agent-guard)'), 1)
+                # A note that merely contains the word 'zcode_run' is not our rule: append the rules clause.
                 (Path(expected) / 'TOOLS.md').write_text('# notes\nuse zcode_run freely, exec is fine\n')
                 installer.main(private_agent_workspace='programmer')
-                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('실행 규칙 (agent-guard)'), 1)
+                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('Execution rules for this environment (agent-guard)'), 1)
 
     def test_discord_agent_rebinds_the_channel_to_the_named_agent(self):
-        """zcode_run 은 auto-coder 에게만 노출된다(플러그인 하드코딩). Discord 바인딩을 그 에이전트로 돌린다."""
-        import install_autoclaw as installer
+        """zcode_run is exposed only to auto-coder (hardcoded in the plugin). Point the Discord binding at that agent."""
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             (state_dir / 'openclaw.json').write_text(json.dumps({'plugins': {'entries': {}},
@@ -913,7 +914,7 @@ class InstallerTests(unittest.TestCase):
                                                        {'agentId': 'main', 'match': {'channel': 'telegram'}}])
                 with self.assertRaises(RuntimeError):
                     installer.main(discord_agent='ghost')
-                # zcode_run 은 auto-coder 에게만 노출되므로 다른 에이전트로 묶는 것은 거부한다(programmer 사고 재발 방지).
+                # zcode_run is exposed only to auto-coder, so binding it to another agent is refused (preventing a recurrence of the programmer incident).
                 with self.assertRaises(RuntimeError):
                     installer.main(discord_agent='programmer')
                 (state_dir / 'openclaw.json').write_text(json.dumps({'plugins': {'entries': {}}, 'agents': {'list': [{'id': 'auto-coder'}]}, 'bindings': []}))
@@ -922,7 +923,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_installer_takes_the_settings_lock(self):
         import fcntl
-        import install_autoclaw as installer
+        from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory() as tmp:
             home, root, app, state_dir = self.prepared_home(tmp)
             with self.installer_context(installer, home, root, app, state_dir):
@@ -946,8 +947,8 @@ class DoctorTests(unittest.TestCase):
             root = Path(tmp); (root / 'state').mkdir()
             saved = dict(current, autoclaw=dict(current['autoclaw'], zcodeSha256='e'))
             (root / 'state/compatibility.json').write_text(json.dumps(saved))
-            fake_module = type(sys)('compatibility_check'); fake_module.candidate = lambda: current
-            with patch.object(g, 'ROOT', root), patch.dict(sys.modules, {'compatibility_check': fake_module}), \
+            fake_module = type(sys)('adapters.compatibility_check'); fake_module.candidate = lambda: current
+            with patch.object(g, 'ROOT', root), patch.dict(sys.modules, {'adapters.compatibility_check': fake_module}), \
                  patch.object(g, 'riskgate_policy', lambda: ROOT / 'state/riskgate.json'), \
                  patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \
                  patch('sys.stdout', new_callable=io.StringIO):
@@ -958,7 +959,7 @@ class DoctorTests(unittest.TestCase):
 
 class CompatibilityTests(unittest.TestCase):
     def test_candidate_records_the_autoclaw_bundle_when_installed(self):
-        import compatibility_check as check
+        from adapters import compatibility_check as check
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = synthetic_autoclaw(root)
@@ -968,8 +969,8 @@ class CompatibilityTests(unittest.TestCase):
             self.assertIsNone(check.autoclaw_candidate(root / 'missing.app'))
 
     def test_verification_keeps_the_autoclaw_baseline_when_the_app_is_unavailable(self):
-        """앱이 잠시 없을 때 verify-updates 가 autoclaw 기준선을 지우면 재설치가 공격자 해시를 축복한다."""
-        import compatibility_check as check
+        """If verify-updates erases the autoclaw baseline while the app is briefly absent, a reinstall blesses an attacker's hash."""
+        from adapters import compatibility_check as check
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); (root / 'state').mkdir()
             saved = {'opencode': {'version': 'o'}, 'zcode': {'version': 'z'}, 'autoclaw': {'version': '1.18.5', 'zcodeCliVersion': '0.15.2', 'zcodeSha256': 'kept'}}

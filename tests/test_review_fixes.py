@@ -120,7 +120,7 @@ if __name__ == '__main__': unittest.main()
 
 
 class InternalHardlinkTests(unittest.TestCase):
-    """OMC 가 체크포인트 파일과 claim 마커를 같은 폴더 안에서 하드링크로 만든다. 바깥 노출이 없으면 허용한다."""
+    """OMC creates checkpoint files and claim markers as hard links within the same folder. Allow it when there is no outside exposure."""
 
     def test_hardlinks_wholly_inside_the_workspace_are_accepted(self):
         import os, tempfile

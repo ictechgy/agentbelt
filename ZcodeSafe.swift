@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import CoreFoundation
 
-// 경로는 계정에서 유도한다. 하드코딩된 사용자 경로는 다른 계정에서 설치할 수 없게 한다.
+// Paths are derived from the account. A hard-coded user path would make installation impossible on another account.
 let homeDirectory = NSHomeDirectory()
 let userName = NSUserName()
 let guardRoot = homeDirectory + "/.local/share/agent-guard"
@@ -10,7 +10,7 @@ let guardScript = guardRoot + "/agent_guard.py"
 let safeAppPath = homeDirectory + "/Applications/Zcode Safe.app"
 let dockBackupPath = guardRoot + "/state/backups/dock-before-safe.plist"
 
-/// 설치기가 `config.json` 에 고정한 Node 의 bin 디렉터리. Zcode 앱 환경의 PATH 앞에 둔다. 없으면 시스템 PATH 만 준다.
+/// The bin directory of the Node the installer pinned in `config.json`. It goes in front of PATH in the Zcode app environment. If there is none, only the system PATH is given.
 func pinnedNodeBinDirectory() -> String? {
     guard let data = FileManager.default.contents(atPath: guardRoot + "/config.json"),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

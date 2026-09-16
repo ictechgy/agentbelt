@@ -1,12 +1,13 @@
 #!/usr/bin/python3
-"""AutoClaw 코딩 런타임을 agent-guard 런처로 돌리도록 설치한다.
+"""Install the AutoClaw coding runtime so that it runs through the agent-guard launcher.
 
-하는 일: (1) 검토된 AutoClaw 앱·번들 Zcode CLI 를 프로필과 호환 기준선에 기록, (2) `~/.local/bin/autoclaw-zcode-safe`
-런처 설치, (3) `~/.openclaw-autoclaw/openclaw.json` 의 zcode-runtime 플러그인 `command` 를 런처로 바꾸고 모델 브로커
-주소 두 변수를 envPassthrough 로 넘기게 한다. 그 외 설정(모델·API 키 등)은 읽되 바꾸지 않는다.
-다시 실행해도 안전하며 원본은 state/backups 에 한 번만 보관한다. 이미 기록된 기준선과 다른 바이너리는
-`--rebaseline` 없이는 축복하지 않는다. `--deny-host-exec` 는 바깥 에이전트의 호스트 exec 를 도구 정책으로 막고,
-`--discord-guild`/`--discord-dm` 은 Discord 원격 제어를 본인 ID 로만 연다.
+What it does: (1) record the reviewed AutoClaw app and bundled Zcode CLI in the profile and the compatibility baseline,
+(2) install the `~/.local/bin/autoclaw-zcode-safe` launcher, (3) change the `command` of the zcode-runtime plugin in
+`~/.openclaw-autoclaw/openclaw.json` to the launcher and have the two model broker address variables passed through with
+envPassthrough. Other settings (models, API keys and so on) are read but not changed. It is safe to run again, and the
+original is kept in state/backups only once. A binary that differs from the already recorded baseline is not blessed
+without `--rebaseline`. `--deny-host-exec` blocks the outer agent's host exec through the tool policy, and
+`--discord-guild`/`--discord-dm` open Discord remote control to your own ID only.
 """
 import argparse
 import fcntl
@@ -19,38 +20,40 @@ import shlex
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
 import agent_guard
-import compatibility_check
-from configure_existing import publish_settings
+from adapters import compatibility_check
+from adapters.configure_existing import publish_settings
 
-HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # 계정 DB 의 홈(환경변수 아님)
+HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)  # The home from the account database (not the environment variable)
 STATE = ROOT / 'state'
 OPENCLAW_STATE = HOME / '.openclaw-autoclaw'
 BROKER_VARIABLES = ['AUTOCLAW_MODEL_BROKER_OPENAI_BASE_URL', 'AUTOCLAW_MODEL_BROKER_ANTHROPIC_BASE_URL']
 
 
 def launcher_path():
-    """AutoClaw 플러그인이 `command` 로 부를 런처 경로."""
+    """The path of the launcher the AutoClaw plugin calls as `command`."""
     return HOME / '.local/bin/autoclaw-zcode-safe'
 
 
 def launcher_exec_line():
-    """런처의 마지막 줄. 플러그인이 넘기는 인자(version / agent-server)를 그대로 전달한다."""
+    """The last line of the launcher. It passes on the arguments the plugin hands over (version / agent-server) unchanged."""
     return 'exec /usr/bin/python3 -I ' + shlex.quote(str(ROOT / 'agent_guard.py')) + ' autoclaw-backend "$@"\n'
 
 
 def launcher_text():
-    """런처 본문. `agent-server` 호출은 파이썬에 닿기 전에 셸이 먼저 `sh-start` 를 기록한다.
+    """The launcher body. For an `agent-server` call the shell records `sh-start` before Python is reached.
 
-    isthmus 채널 사고에서 게이트웨이가 띄운 런처가 파이썬 첫 줄(`started`)에도 못 닿았고 감독자 쪽 재현은
-    전부 정상이었다. 셸 자체가 증거를 남겨야 셸 기동·python3 셔틀·파이썬 기동 중 어디서 멈췄는지 가른다.
-    pid 는 exec 로 이어지므로 파이썬 단계의 pid 와 같다. 기록 실패는 실행을 막지 않는다. 로그 자리나 `state/runtime`
-    이 링크면 쓰지 않고(파이썬 쪽 O_NOFOLLOW·private_dir 와 같은 뜻), 로그가 일반 파일이 아니면(FIFO 는 `>>` 가
-    읽는 쪽을 기다리며 exec 전에 멈춘다) 건너뛴다. 새 파일은 서브셸 umask 로 0600 이 되게 한다(자식 umask 는 그대로).
-    version 프로브는 기록하지 않는다 — 남기면 "python-start 없음" 으로 오독된다. 파이썬 쪽 판정
-    (`is_autoclaw_agent_server_call`)도 같은 기준(첫 인자만)이다.
+    In the isthmus channel incident the launcher started by the gateway never reached even Python's first line
+    (`started`), while every reproduction on the supervisor side was normal. Only when the shell itself leaves evidence
+    can we tell whether it stopped during shell startup, the python3 shuttle or Python startup. The pid carries through
+    exec, so it is the same pid as the Python stage. A failed record does not block execution. If the log slot or
+    `state/runtime` is a link it is not written (the same intent as O_NOFOLLOW and private_dir on the Python side), and
+    if the log is not a regular file it is skipped (with a FIFO, `>>` waits for a reader and stalls before exec). A new
+    file is made 0600 through the subshell umask (the child's umask is left alone). The version probe is not recorded --
+    recording it would be misread as "no python-start". The decision on the Python side
+    (`is_autoclaw_agent_server_call`) uses the same criterion (the first argument only).
     """
     log = shlex.quote(str(ROOT / 'state/runtime/autoclaw-launches.log'))
     return ('#!/bin/sh\n'
@@ -62,9 +65,9 @@ def launcher_text():
 
 
 def previous_launcher_texts():
-    """재설치가 알아보고 교체해도 되는 이전 가드 런처 본문. 여기 없는 내용은 낯선 런처로 보고 거부한다.
+    """Earlier guard launcher bodies that a reinstall may recognize and replace. Anything not listed here is treated as an unfamiliar launcher and refused.
 
-    본문을 바꿀 때마다 직전 본문을 여기에 추가한다(2026-09-15: 두 줄짜리 원본, sh-start 첫 판).
+    Every time the body changes, add the immediately preceding body here (2026-09-15: the two-line original, the first sh-start edition).
     """
     log = shlex.quote(str(ROOT / 'state/runtime/autoclaw-launches.log'))
     first_stage_logging = ('#!/bin/sh\n'
@@ -76,7 +79,7 @@ def previous_launcher_texts():
 
 
 def read_bundle():
-    """설치된 AutoClaw 앱에서 버전·번들 CLI 해시를 읽는다. 앱이 없으면 설치를 거부한다."""
+    """Read the version and the bundled CLI hash from the installed AutoClaw app. If the app is missing, refuse to install."""
     bundle = compatibility_check.autoclaw_candidate(agent_guard.AUTOCLAW_APP)
     if bundle is None:
         raise RuntimeError('AutoClaw.app is not installed; nothing to protect.')
@@ -84,7 +87,7 @@ def read_bundle():
 
 
 def check_launcher_directory(directory):
-    """런처 디렉터리는 링크가 아니고 내 소유이며 그룹·타인이 쓸 수 없어야 한다. 아니면 런처가 바꿔치기된다."""
+    """The launcher directory must not be a link, must be owned by me and must not be writable by group or others. Otherwise the launcher gets swapped out."""
     if directory.is_symlink():
         raise RuntimeError('Refusing a symlinked launcher directory')
     info = directory.stat()
@@ -93,10 +96,11 @@ def check_launcher_directory(directory):
 
 
 def install_launcher():
-    """런처를 0700 으로 만든다. 같은 내용이면 그대로 두고, 0700 인 이전 가드 런처면 교체하며, 그 밖의 파일은 덮어쓰지 않는다.
+    """Create the launcher with mode 0700. Identical content is left alone, an earlier guard launcher at 0700 is replaced, and any other file is not overwritten.
 
-    교체는 같은 디렉터리의 임시 파일에 다 쓰고 fsync 한 뒤 rename 으로 한다 — unlink 후 새로 만들면 그 사이에
-    게이트웨이가 런처를 띄웠을 때 부재나 빈 스크립트를 실행한다. 이전 실패가 남긴 임시 파일은 치우고 진행한다.
+    The replacement writes everything to a temporary file in the same directory, fsyncs it and then renames -- unlinking
+    and creating anew would, if the gateway started the launcher in between, run a missing or empty script. A temporary
+    file left behind by an earlier failure is cleared away before continuing.
     """
     path = launcher_path()
     check_launcher_directory(path.parent)
@@ -124,7 +128,7 @@ def install_launcher():
 
 
 def load_openclaw_config():
-    """AutoClaw 설정 파일을 읽는다. 링크이거나 없으면(앱을 아직 한 번도 안 켰으면) 거부한다."""
+    """Read the AutoClaw configuration file. Refuse if it is a link or missing (that is, if the app has never been launched)."""
     path = OPENCLAW_STATE / 'openclaw.json'
     if path.is_symlink():
         raise RuntimeError('Refusing a symlinked openclaw.json')
@@ -134,19 +138,19 @@ def load_openclaw_config():
 
 
 def patched_plugin_entry(entry):
-    """zcode-runtime 항목에 런처·envPassthrough 를 넣은 사본. 다른 키는 유지한다."""
+    """A copy of the zcode-runtime entry with the launcher and envPassthrough put in. Other keys are kept."""
     entry = dict(entry or {})
     config = dict(entry.get('config') or {})
     config.update({'command': str(launcher_path()), 'args': [], 'envPassthrough': list(BROKER_VARIABLES),
                    'runtimeEnabled': True,
-                   # 기본 30초 핸드셰이크는 큰 워크스페이스의 하드링크 검사(파일 90만 개 = 25초)와 첫 기동을 못 기다린다.
+                   # The default 30 second handshake cannot wait out the hard link check on a large workspace (900,000 files = 25 seconds) plus the first startup.
                    'requestTimeoutMs': 180000})
     entry.update({'enabled': True, 'config': config})
     return entry
 
 
 def backup_once(path, data):
-    """원본을 state/backups 에 한 번만 보관한다. 이미 보관본이 있으면 새로 만들지 않는다."""
+    """Keep the original in state/backups only once. If a kept copy already exists, do not make a new one."""
     backups = agent_guard.private_dir(STATE / 'backups')
     if any(backups.glob(path.name + '.*')):
         return
@@ -157,26 +161,27 @@ def backup_once(path, data):
 
 
 def reviewed_baseline(existing, bundle, rebaseline):
-    """기록된 기준선이 있고 지금 번들과 다르면 명시적 --rebaseline 없이는 바꾸지 않는다."""
+    """If there is a recorded baseline and it differs from the current bundle, do not change it without an explicit --rebaseline."""
     if existing and existing != bundle and not rebaseline:
         raise RuntimeError('AutoClaw bundle differs from the reviewed baseline (recorded ' + existing.get('zcodeSha256', '?')[:12]
                            + ', installed ' + bundle['zcodeSha256'][:12] + '). Review the update, then rerun with --rebaseline.')
     return bundle
 
 
-# exec/process: 호스트 셸. gateway: 에이전트가 openclaw.json 을 config.patch/apply 로 고치거나 재시작할 수 있는 도구라
-# 이 잠금 자체를 되돌릴 수 있다(2026-09-14 모델이 config.schema.lookup 으로 설정을 뒤지는 것을 실측).
+# exec/process: the host shell. gateway: a tool with which the agent can edit openclaw.json through config.patch/apply or
+# restart it, so it can undo this lockdown itself (2026-09-14: observed a model digging through the settings with config.schema.lookup).
 HOST_EXEC_TOOLS = {'exec', 'process', 'gateway'}
-# AutoClaw 의 zcode-runtime 은 이 에이전트 ID 에게만 zcode_run 을 노출한다(extensions/zcode-runtime/agent-context.js).
+# AutoClaw's zcode-runtime exposes zcode_run only to this agent id (extensions/zcode-runtime/agent-context.js).
 ZCODE_OWNER_AGENT_ID = 'auto-coder'
 DISCORD_USER_ID = re.compile(r'^[0-9]{17,20}$')
 
 
 def deny_host_exec_tools(tools):
-    """바깥 OpenClaw 에이전트의 호스트 exec·process·gateway 도구를 막은 tools 사본. 코딩은 zcode 경로로만 가게 된다.
+    """A copy of tools with the outer OpenClaw agent's host exec, process and gateway tools blocked. Coding then goes only through the zcode path.
 
-    AutoClaw 의 원격 설정 새로고침이 `exec.security` 를 `full` 로 되돌리므로 실제 잠금은 도구 정책 `deny` 다
-    (OpenClaw 문서: "To hard-disable exec, deny it via tool policy"). elevated 도 꺼서 채널의 `/elevated` 가 못 살린다.
+    AutoClaw's remote settings refresh puts `exec.security` back to `full`, so the real lock is the tool policy `deny`
+    (OpenClaw documentation: "To hard-disable exec, deny it via tool policy"). elevated is turned off as well so that
+    `/elevated` from a channel cannot revive it.
     """
     tools = dict(tools or {})
     tools['exec'] = dict(tools.get('exec') or {}, security='deny')
@@ -186,7 +191,7 @@ def deny_host_exec_tools(tools):
 
 
 def deny_host_exec_agents(agents):
-    """에이전트별 도구 정책에도 같은 deny 를 넣은 agents 사본. 전역 정책이 되돌려져도 에이전트 범위가 남는다."""
+    """A copy of agents with the same deny put into each agent's tool policy as well. Even if the global policy is reverted, the agent-scoped one remains."""
     agents = dict(agents or {})
     entries = []
     for agent in agents.get('list') or []:
@@ -201,7 +206,7 @@ def deny_host_exec_agents(agents):
 
 
 def discord_accounts(channels):
-    """설정된 Discord 계정 사전(사본). 없으면 앱에서 봇을 먼저 연결해야 한다."""
+    """A copy of the dictionary of configured Discord accounts. If there is none, the bot has to be connected in the app first."""
     channels = dict(channels or {})
     discord = dict(channels.get('discord') or {})
     accounts = dict(discord.get('accounts') or {})
@@ -211,7 +216,7 @@ def discord_accounts(channels):
 
 
 def snowflakes(values, what):
-    """Discord ID(17~20자리 숫자)만 받는다. `*`·접근 그룹·이름은 원격 제어 표면을 키우므로 거부한다."""
+    """Only Discord IDs (17-20 digit numbers) are accepted. `*`, access groups and names are rejected because they enlarge the remote control surface."""
     if isinstance(values, (str, bytes)):
         raise RuntimeError('Discord ' + what + ' must be a list of IDs, not a single string.')
     values = [str(value) for value in (values or [])]
@@ -221,7 +226,7 @@ def snowflakes(values, what):
 
 
 def discord_dm_allowlist(channels, user_ids):
-    """모든 Discord 계정의 DM 을 주어진 사용자 ID 로만 허용한 channels 사본. 서버 정책·토큰은 그대로."""
+    """A copy of channels in which DMs on every Discord account are allowed only from the given user IDs. Server policy and tokens are left as they are."""
     users = snowflakes(user_ids, 'user IDs')
     channels, discord, accounts = discord_accounts(channels)
     for name, account in accounts.items():
@@ -232,10 +237,11 @@ def discord_dm_allowlist(channels, user_ids):
 
 
 def discord_guild_allowlist(channels, user_ids, guild_id, channel_id=None):
-    """비공개 서버 채널로 제어할 때의 channels 사본. DM 은 건드리지 않는다(끈 채로 둔다).
+    """A copy of channels for driving the agent from a private server channel. DMs are not touched (they stay off).
 
-    서버 하나만 허용 목록에 넣고 그 안에서도 `users` 로 보낸 사람을 본인 ID 로 고정한다. 서버에 누가 초대돼도
-    그 사람 메시지는 무시된다. 채널 ID 를 주면 그 채널 밖은 거부된다. 서버에 본인뿐이므로 멘션은 요구하지 않는다.
+    Only one server goes on the allowlist, and inside it `users` pins the sender to your own ID. Even if somebody else
+    is invited to the server, that person's messages are ignored. If a channel ID is given, anything outside that
+    channel is refused. Since you are the only one in the server, a mention is not required.
     """
     users = snowflakes(user_ids, 'user IDs')
     guild = snowflakes([guild_id], 'server ID')[0]
@@ -252,27 +258,27 @@ def discord_guild_allowlist(channels, user_ids, guild_id, channel_id=None):
 
 AGENT_TOOLS_NOTE = """# TOOLS.md - Local Notes
 
-### 이 환경의 실행 규칙 (agent-guard)
+### Execution rules for this environment (agent-guard)
 
-- 이 설치에는 호스트 셸 도구가 **없다**: `exec`, `process`, `gateway` 는 의도적으로 제거됐다. 켜 달라고 요청하지 마라.
-- 이 워크스페이스는 코디네이터 메모 폴더일 뿐이다. 프로젝트 저장소는 여기 없다. 저장소의 모든 읽기·수정·명령
-  (`git status`, 테스트·빌드, 파일 삭제 포함)은 **`zcode_run`** 으로 보낸다. 세션은 이미 프로젝트에 바인딩돼 있다.
-  예: prompt="Run `git status` and `git diff --stat` and report the output verbatim."
-- 저장소 작업을 서브에이전트(`sessions_spawn`)에 넘기지 마라. 서브에이전트 세션에는 워크스페이스 바인딩이 없어
-  `zcode_run` 이 거부된다. 이 세션에서 직접 부른다.
-- `zcode_run` 안의 Zcode 는 macOS 샌드박스에서 돌며 승인창은 뜨지 않는다. 결과를 기다렸다가 그대로 보고한다.
+- This installation has **no** host shell tools: `exec`, `process` and `gateway` were removed on purpose. Do not ask for them to be enabled.
+- This workspace is only the coordinator's notes folder. The project repository is not here. Send every read, edit and command
+  against the repository (including `git status`, tests, builds and file deletion) through **`zcode_run`**. The session is already bound to the project.
+  Example: prompt="Run `git status` and `git diff --stat` and report the output verbatim."
+- Do not hand repository work to a subagent (`sessions_spawn`). A subagent session has no workspace binding, so
+  `zcode_run` is refused there. Call it directly from this session.
+- The Zcode inside `zcode_run` runs in the macOS sandbox and no approval dialog appears. Wait for the result and report it verbatim.
 """
 
 
 def private_agent_workspace_path(agent_id):
-    """에이전트 전용 메모 폴더(AutoClaw 기본 배치와 같은 위치)."""
+    """The agent's private notes folder (the same location as AutoClaw's default layout)."""
     if not re.match(r'^[A-Za-z0-9_-]{1,64}$', agent_id or ''):
         raise RuntimeError('Agent id must be a short identifier.')
     return OPENCLAW_STATE / 'agents' / agent_id / 'workspace'
 
 
 def relocate_agent_workspace(agents, agent_id):
-    """해당 에이전트의 workspace 를 전용 폴더로 바꾼 agents 사본. 다른 키·다른 에이전트는 그대로."""
+    """A copy of agents with that agent's workspace changed to the private folder. Other keys and other agents are left as they are."""
     agents = dict(agents or {})
     entries = []
     found = False
@@ -289,23 +295,23 @@ def relocate_agent_workspace(agents, agent_id):
 
 
 def seed_private_workspace(agent_id):
-    """전용 폴더를 0700 으로 만들고 실행 규칙 메모(TOOLS.md)를 심는다. 이미 있으면 메모만 보장한다."""
+    """Create the private folder with mode 0700 and plant the execution rules note (TOOLS.md). If it already exists, only make sure the note is there."""
     directory = private_agent_workspace_path(agent_id)
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o700)
     note = directory / 'TOOLS.md'
     if note.is_symlink():
         raise RuntimeError('Refusing a symlinked TOOLS.md')
-    if not note.is_file() or '실행 규칙 (agent-guard)' not in note.read_text():
+    if not note.is_file() or 'Execution rules for this environment (agent-guard)' not in note.read_text():
         with open(note, 'a', encoding='utf-8') as stream:
             stream.write(('' if not note.exists() or note.stat().st_size == 0 else '\n') + AGENT_TOOLS_NOTE)
 
 
 def rebind_discord_agent(config, agent_id):
-    """Discord 채널 바인딩의 agentId 를 바꾼 bindings 사본. 다른 채널 바인딩은 그대로.
+    """A copy of bindings with the agentId of the Discord channel binding changed. Other channel bindings are left as they are.
 
-    AutoClaw 의 zcode-runtime 은 `zcode_run` 을 에이전트 ID `auto-coder` 에게만 노출하므로(agent-context.js 하드코딩)
-    다른 에이전트로 Discord 를 묶으면 격리 코딩이 불가능하다.
+    AutoClaw's zcode-runtime exposes `zcode_run` only to the agent id `auto-coder` (hard coded in agent-context.js), so
+    binding Discord to a different agent makes confined coding impossible.
     """
     if not any(agent.get('id') == agent_id for agent in (config.get('agents') or {}).get('list') or []):
         raise RuntimeError('No agent with id ' + agent_id + ' in openclaw.json.')
@@ -326,7 +332,7 @@ def rebind_discord_agent(config, agent_id):
 
 def install(rebaseline=False, deny_host_exec=True, discord_users=None, discord_dm=False, discord_guild=None, discord_channel=None,
             private_agent_workspace=None, discord_agent=None):
-    """잠금 안에서 실제 설치를 수행한다. 호스트 exec 차단은 기본값이다(페일오픈 설치 금지)."""
+    """Carry out the actual installation inside the lock. Blocking host exec is the default (no fail-open install)."""
     if discord_dm and discord_guild is not None:
         raise RuntimeError('Choose one Discord path: --discord-guild or --discord-dm, not both.')
     if discord_users is not None and not discord_users:
@@ -369,7 +375,7 @@ def install(rebaseline=False, deny_host_exec=True, discord_users=None, discord_d
 
 def main(rebaseline=False, deny_host_exec=True, discord_users=None, discord_dm=False, discord_guild=None, discord_channel=None,
          private_agent_workspace=None, discord_agent=None):
-    """다른 설정 게시자(configure_existing, verify-updates)와 같은 잠금을 잡고 설치한다."""
+    """Install while holding the same lock as the other settings publishers (configure_existing, verify-updates)."""
     state = agent_guard.private_dir(STATE)
     descriptor = os.open(str(state / '.settings-import.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'w') as lock:
@@ -401,7 +407,7 @@ if __name__ == '__main__':
         main(options.rebaseline, options.deny_host_exec, users, options.discord_dm, options.discord_guild, options.discord_channel,
              options.private_agent_workspace, options.discord_agent)
     except RuntimeError as error:
-        # 가드가 만든 문구만 보여 준다. 설정 파서 예외에는 자격 증명 조각이 섞일 수 있다.
+        # Show only wording the guard produced. Configuration parser exceptions can have fragments of credentials mixed in.
         raise SystemExit('install_autoclaw: ' + str(error))
     except Exception:
         raise SystemExit('install_autoclaw: failed; no credential values are shown. Inspect the local setup before retrying.')

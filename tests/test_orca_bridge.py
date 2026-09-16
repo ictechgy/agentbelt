@@ -15,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import agent_guard as g
-import orca_broker
+from adapters import orca_broker
 
 
 class FakeOrca:

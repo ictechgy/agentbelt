@@ -1,7 +1,7 @@
-"""AutoClaw 세션-워크스페이스 바인딩 파일을 호스트에서 쓰는 도구의 회귀.
+"""Regression for the tool that writes the AutoClaw session-workspace binding file on the host.
 
-플러그인(session-workspace-binding.js)은 `<state>/autoclaw/coding-workspaces/v1/<sha256("local\\0"+sessionKey)>.json` 을
-읽으며 키 집합·해시·0600·일반 파일·경로 inode 를 검사한다. 여기서 쓰는 파일은 그 검증을 그대로 통과해야 한다.
+The plugin (session-workspace-binding.js) reads `<state>/autoclaw/coding-workspaces/v1/<sha256("local\\0"+sessionKey)>.json`
+and checks the key set, hash, 0600, regular-file status and path inode. The file written here must pass that validation as is.
 """
 import hashlib
 import json
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import bind_autoclaw_workspace as binder
+from adapters import bind_autoclaw_workspace as binder
 
 SESSION = 'agent:auto-coder:discord:channel:100000000000000001'
 

@@ -1,4 +1,4 @@
-"""세션 시작 시 격리 환경 설명이 자식에게 전달되는지 확인하는 회귀."""
+"""Regression checking that the isolated-environment description is delivered to the child at session start."""
 import json
 from pathlib import Path
 import tempfile
@@ -12,7 +12,7 @@ import environment_notice as notice
 
 
 def confined(script, **options):
-    """실제 가드 정책으로 셸 조각을 실행하고 (종료 코드, 출력)을 돌려준다."""
+    """Run a shell snippet under the real guard policy and return (exit code, output)."""
     with tempfile.TemporaryDirectory(prefix='notice-', dir=Path.home()) as tmp:
         work = Path(tmp)
         (work / 'p.sh').write_text(script)
@@ -52,19 +52,19 @@ class RenderTests(unittest.TestCase):
         self.assertNotEqual(absent, self.text)
 
     def test_explains_dart_cache_location(self):
-        """실사용 세션이 ~/.pub-cache 차단을 보고 dart 검증이 불가능하다고 오진했다."""
+        """A real session saw the ~/.pub-cache block and misdiagnosed dart verification as impossible."""
         self.assertIn(str(self.home / '.pub-cache'), self.text)
         self.assertIn('PUB_CACHE', self.text)
         self.assertIn('dart pub get', self.text)
 
     def test_states_that_nested_launchers_cannot_run_inside(self):
-        """sandbox-exec 중첩은 커널이 거부하므로 packet-ask 는 호스트에서만 돈다."""
+        """The kernel rejects nested sandbox-exec, so packet-ask runs only on the host."""
         self.assertIn('packet-ask', self.text)
         self.assertIn('sandbox-exec', self.text)
-        self.assertIn('호스트', self.text)
+        self.assertIn('host', self.text)
 
     def test_explains_the_session_loopback_port_for_dart_coverage(self):
-        """실사용 세션이 dart test --coverage 가 VM 서비스 포트에서 멈춘다고 보고했다."""
+        """A real session reported that dart test --coverage hangs on the VM service port."""
         with_port = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENT_GUARD_LOOPBACK_PORT='47311'), self.policy)
         self.assertIn('47311', with_port)
         self.assertIn('--enable-vm-service=$AGENT_GUARD_LOOPBACK_PORT', with_port)
@@ -72,16 +72,16 @@ class RenderTests(unittest.TestCase):
         self.assertIn('EPERM', self.text)
 
     def test_relay_session_points_at_packet_review_instead_of_the_user(self):
-        """실사용 세션이 '호스트 실행을 요청하고 멈춰라' 절을 따라 packet-review 를 쓰지 않았다."""
+        """A real session followed the 'request host execution and stop' clause and did not use packet-review."""
         relayed = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENT_GUARD_PACKET_REVIEW='1'), self.policy)
-        self.assertNotIn('사용자가 호스트\n  터미널에서 실행할', relayed)
-        self.assertNotIn('명령을 제시한 뒤 멈춘다', relayed)
+        self.assertNotIn('for the user to run on the host terminal', relayed)
+        self.assertNotIn('and then stop. Do not explore retries or workarounds.', relayed)
         self.assertIn('`packet-review`', relayed)
-        # 중계가 없는 세션은 여전히 사용자에게 넘기라고 안내한다.
-        self.assertIn('명령을 제시한 뒤 멈춘다', self.text)
+        # A session without a relay is still told to hand off to the user.
+        self.assertIn('and then stop. Do not explore retries or workarounds.', self.text)
 
     def test_explains_swiftpm_flags(self):
-        """세션이 'Swift 툴체인 고장'으로 오진했다. 실제로는 모듈 캐시·중첩 샌드박스·*.db 규칙이었다."""
+        """A session misdiagnosed this as a 'broken Swift toolchain'. It was really the module cache, the nested sandbox and the *.db rule."""
         self.assertIn('swift build --build-system native --disable-sandbox --scratch-path "$TMPDIR/swiftpm-build"', self.text)
         self.assertIn('not supported by the compiler', self.text)
         self.assertIn('cartograph-index-db', self.text)
@@ -93,7 +93,7 @@ class RenderTests(unittest.TestCase):
 
 class ZcodeWiringTests(unittest.TestCase):
     def test_zcode_backend_requests_global_agents_file(self):
-        """Zcode 는 $HOME/.zcode/AGENTS.md 를 전역 지침으로 읽으므로 그 경로로 안내문을 요청해야 한다."""
+        """Zcode reads $HOME/.zcode/AGENTS.md as global instructions, so the notice must be requested at that path."""
         from unittest.mock import patch
         import os
         captured = {}

@@ -19,19 +19,19 @@ ROOT = Path(__file__).resolve().parent
 
 
 def owner_account():
-    """실행 계정의 passwd 항목. HOME 환경변수가 아니라 계정 DB 를 쓴다.
+    """The passwd entry of the running account. Uses the account database, not the HOME environment variable.
 
-    왜. 샌드박스 안의 훅(zcode_hook)도 이 모듈을 import 하는데 그곳의 HOME 은 격리 홈이다. HOME 으로 소유자
-    홈을 정하면 워크스페이스 경계 판정(`workspace_path`)이 격리 홈 기준으로 틀어진다. 계정 DB 조회는
-    Seatbelt 가 허용하는 opendirectoryd libinfo 로 양쪽에서 같은 답을 준다.
+    Why. The hook inside the sandbox (zcode_hook) imports this module too, and its HOME is the isolated home. Deciding the
+    owner home from HOME would skew the workspace boundary check (`workspace_path`) toward the isolated home. Querying the
+    account database goes through opendirectoryd libinfo, which Seatbelt allows, so both sides give the same answer.
     """
     return pwd.getpwuid(os.getuid())
 
 
 def load_path_config():
-    """`ROOT/config.json` 의 경로 재정의(설치기가 쓴다). 없거나 못 읽으면(샌드박스 안) 빈 사전.
+    """Path overrides from `ROOT/config.json` (written by the installer). Empty dict if missing or unreadable (in the sandbox).
 
-    키: ownerHome, node, opencode, claude, packetAskVenv, kimi, autoclawApp. 값은 절대 경로 문자열.
+    Keys: ownerHome, node, opencode, claude, packetAskVenv, kimi, autoclawApp. Values are absolute path strings.
     """
     try:
         data = json.loads((ROOT / 'config.json').read_text())
@@ -41,7 +41,7 @@ def load_path_config():
 
 
 def newest_nvm_node(home):
-    """설정이 없을 때의 Node 후보: nvm 의 가장 높은 버전, 없으면 Homebrew. 실행 시점에 없으면 run_confined 가 닫힌다."""
+    """Node candidate when no config is set: the highest nvm version, else Homebrew. If absent at launch, run_confined closes."""
     candidates = list((home / '.nvm/versions/node').glob('v*/bin/node'))
     if candidates:
         def version(path):
@@ -59,25 +59,25 @@ OWNER_HOME = Path(_PATHS.get('ownerHome') or OWNER_ACCOUNT.pw_dir)
 OWNER_USER = OWNER_ACCOUNT.pw_name
 NODE = Path(_PATHS.get('node') or newest_nvm_node(OWNER_HOME))
 OPENCODE = Path(_PATHS.get('opencode') or OWNER_HOME / '.opencode/bin/opencode')
-# AutoClaw(z.ai) 는 자체 Zcode CLI 를 번들한다. 코딩 턴마다 이 바이너리를 우리 격리 안에서 띄운다.
+# AutoClaw(z.ai) bundles its own Zcode CLI. Every coding turn launches this binary inside our isolation.
 AUTOCLAW_APP = Path(_PATHS.get('autoclawApp') or '/Applications/AutoClaw.app')
 AUTOCLAW_ZCODE = AUTOCLAW_APP / 'Contents/Resources/zcode/darwin-arm64/zcode'
-# Zcode CLI 는 워크스페이스의 `.zcode/config.json`·`zcode.json`(훅·MCP 포함)과 `.agents/mcp.json` 을 읽는다.
-# 자식이 이걸 심으면 PreToolUse 훅을 끌 수 있으므로 두 모드 모두 쓰기를 막는다.
+# The Zcode CLI reads the workspace `.zcode/config.json` / `zcode.json` (hooks and MCP included) and `.agents/mcp.json`.
+# If the child plants these it can turn off the PreToolUse hook, so both modes deny writes to them.
 ZCODE_WORKSPACE_CONFIG_PATHS = ['.zcode', 'zcode.json', '.agents/mcp.json']
 PACKET_VENV = Path(_PATHS.get('packetAskVenv') or OWNER_HOME / '.local/share/uv/tools/packet-ask')
 PACKET_PYTHON = PACKET_VENV / 'bin/python'
 CLAUDE = Path(_PATHS.get('claude') or OWNER_HOME / '.local/bin/claude')
-# Kimi Code CLI(Moonshot). Node SEA 단일 바이너리이며 네이티브 클립보드 바인딩을 번들한다.
-# kimi 모드는 이 경로만 읽기 허용에 넣고, 실행 전 state/compatibility.json 의 해시와 대조한다.
+# Kimi Code CLI (Moonshot). A single Node SEA binary that bundles native clipboard bindings.
+# kimi mode puts only this path on the read allowance and compares it with the hash in state/compatibility.json first.
 KIMI = Path(_PATHS.get('kimi') or OWNER_HOME / '.kimi-code/bin/kimi')
-# 검토된 packet-ask 버전은 소스가 아니라 state/packet-ask-version.json 한 곳에만 둔다.
-# 승격 중계가 상태 파일만 바꾸면 되고, 가드 코드는 호스트에서만 바뀐다.
+# The reviewed packet-ask version lives in exactly one place, state/packet-ask-version.json, not in the source.
+# The promotion relay only has to change the state file, and guard code changes only on the host.
 PACKET_ASK_VERSION_FILE = ROOT / 'state/packet-ask-version.json'
 
 
 def packet_ask_pinned_version():
-    """검토된 packet-ask 버전. 파일이 없거나 형식이 다르면 실행을 거부한다(닫힘)."""
+    """The reviewed packet-ask version. Refuses to run if the file is missing or has a different format (fail-closed)."""
     try:
         value = json.loads(PACKET_ASK_VERSION_FILE.read_text()).get('version')
     except (OSError, ValueError, AttributeError):
@@ -115,13 +115,13 @@ def write_private_json(path, value):
 
 
 def write_private_file(root, relative, text, mode=0o600):
-    """감독자가 자식이 쓸 수 있는 트리(격리 홈) 안에 파일을 쓸 때의 유일한 경로.
+    """The only path by which the supervisor writes a file inside a tree the child can write to (the isolated home).
 
-    왜 필요한가. 이전 세션의 에이전트가 격리 홈에 심볼릭 링크를 심어 두면, 비격리 감독자가
-    O_CREAT|O_TRUNC 로 여는 순간 호스트 임의 파일이 잘리거나 토큰이 그 파일에 기록된다(네
-    트랙 리뷰 CRITICAL). root 는 감독자 소유 경로여야 하고, 그 아래는 O_NOFOLLOW 디렉터리
-    fd 로 한 컴포넌트씩 내려가며 링크·타인 소유를 거부한다. 최종 이름이 이미 있으면 링크
-    자체를 unlink 하고 O_CREAT|O_EXCL|O_NOFOLLOW 로 새로 만든다.
+    Why this is needed. If an agent from a previous session planted a symlink in the isolated home, the moment the
+    unsandboxed supervisor opens it with O_CREAT|O_TRUNC an arbitrary host file is truncated or a token is written into
+    that file (four-track review CRITICAL). root must be a supervisor-owned path, and below it we descend one component
+    at a time with O_NOFOLLOW directory fds, refusing links and ownership by others. If the final name already exists,
+    the link itself is unlinked and it is recreated with O_CREAT|O_EXCL|O_NOFOLLOW.
     """
     relative = Path(relative)
     parts = relative.parts
@@ -154,7 +154,7 @@ def write_private_file(root, relative, text, mode=0o600):
             exists = False
         if exists:
             try:
-                os.unlink(name, dir_fd=descriptor)  # 링크라면 링크 자체만 지운다
+                os.unlink(name, dir_fd=descriptor)  # if it is a link, delete only the link itself
             except OSError:
                 raise GuardError('Refusing to replace a non-file at ' + str(relative)) from None
         out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=descriptor)
@@ -211,9 +211,9 @@ def workspace_path(raw, scan_hardlinks=True):
     def scan_error(error):
         raise GuardError('Cannot inspect the complete workspace; restore directory access before launching.') from None
 
-    # 하드링크는 다른 경로(특히 워크스페이스 밖)의 inode 를 노출할 수 있어 검사한다. 링크 수만큼의
-    # 경로가 전부 워크스페이스 안에서 발견되면 노출이 없으므로 허용한다(OMC 가 체크포인트와 claim
-    # 마커를 같은 폴더에 하드링크 쌍으로 만든다). 하나라도 밖에 있으면 거부한다.
+    # Hardlinks can expose an inode of another path (especially outside the workspace), so they are inspected. If as many
+    # paths as the link count are all found inside the workspace there is no exposure, so it is allowed (OMC creates the
+    # checkpoint and the claim marker as a hardlink pair in the same folder). If even one is outside, refuse.
     linked = {}
     for directory, dirs, files in os.walk(path, followlinks=False, onerror=scan_error) if scan_hardlinks else []:
         for name in files:
@@ -233,9 +233,9 @@ def workspace_path(raw, scan_hardlinks=True):
 
 
 def host_git_identity():
-    """호스트 전역 gitconfig 의 user.name/user.email. 둘 다 한 줄짜리 평범한 값일 때만 돌려준다.
+    """user.name/user.email from the host global gitconfig. Returned only when both are plain single-line values.
 
-    커밋 작성자 신원은 이미 모든 커밋에 공개되는 값이라 격리 홈에 복사해도 새어 나가는 비밀이 아니다.
+    The commit author identity is already published in every commit, so copying it into the isolated home leaks no secret.
     """
     values = []
     for key in ('user.name', 'user.email'):
@@ -250,10 +250,10 @@ def host_git_identity():
 
 def clean_environment(home, github=None):
     tmp = private_dir(home / 'tmp')
-    # 빈 .npmrc 로 호스트의 실제 ~/.npmrc 를 무시한다. 매 실행 링크 안전하게 다시 만든다.
+    # An empty .npmrc makes the real ~/.npmrc of the host be ignored. Recreated link-safely on every run.
     write_private_file(home, '.npmrc', '')
-    # 격리 홈에는 전역 gitconfig 가 없어 작성자가 `사용자@호스트명` 이 된다. 호스트 신원의 이름·이메일만 심고
-    # 자식이 못 바꾸게 잠근다(run_confined 의 denyWrite). 나머지 전역·시스템 설정은 계속 /dev/null 이다.
+    # The isolated home has no global gitconfig, so the author becomes `user@hostname`. Plant only the host identity name
+    # and email and lock them against the child (denyWrite in run_confined). Other global/system settings stay /dev/null.
     identity = host_git_identity()
     git_config_global = '/dev/null'
     if identity:
@@ -269,8 +269,8 @@ def clean_environment(home, github=None):
         'SHELL': '/bin/bash', 'LANG': 'en_US.UTF-8', 'LC_ALL': 'en_US.UTF-8',
         'DEVELOPER_DIR': '/Library/Developer/CommandLineTools',
         'TMPDIR': str(tmp), 'CLAUDE_CODE_TMPDIR': str(tmp),
-        # clang/swift 의 기본 모듈 캐시는 /var/folders 아래라 막힌다. 캐시가 없으면 swift 가 stdlib 를
-        # 인터페이스에서 다시 빌드하다 "SDK not supported by the compiler" 로 죽는다(툴체인 고장 아님).
+        # The default module cache of clang/swift lives under /var/folders, which is blocked. Without a cache, swift
+        # rebuilds stdlib from its interface and dies with "SDK not supported by the compiler" (not a broken toolchain).
         'CLANG_MODULE_CACHE_PATH': str(tmp / 'clang-module-cache'),
         'XDG_CONFIG_HOME': str(home / '.config'),
         'XDG_DATA_HOME': str(home / '.local/share'),
@@ -287,13 +287,13 @@ def clean_environment(home, github=None):
         # ~/.npmrc just as effectively.
         'NPM_CONFIG_USERCONFIG': str(home / '.npmrc'), 'NPM_CONFIG_GLOBALCONFIG': '/dev/null',
         'PIP_CONFIG_FILE': '/dev/null', 'PIP_DISABLE_PIP_VERSION_CHECK': '1',
-        # JVM 은 user.home 을 계정 DB 에서, java.io.tmpdir 을 Darwin 임시 디렉터리에서 얻어 둘 다 닫힌 경로에
-        # 쓴다(Gradle 래퍼가 실제 ~/.gradle 에, Kotlin 데몬이 /var/folders/…/T 에 쓰다 EPERM). 격리 홈으로 돌린다.
-        # 샌드박스 런타임은 자기 프록시 에이전트 플래그를 이 값 앞에 덧붙인다(보존됨).
+        # The JVM takes user.home from the account database and java.io.tmpdir from the Darwin temp directory, and writes
+        # to both closed paths (the Gradle wrapper into the real ~/.gradle, the Kotlin daemon into /var/folders/.../T,
+        # EPERM). Point them at the isolated home. The sandbox runtime prepends its own proxy agent flags (preserved).
         'JAVA_TOOL_OPTIONS': '-Duser.home=' + str(home) + ' -Djava.io.tmpdir=' + str(tmp),
         'MAVEN_OPTS': '-Duser.home=' + str(home) + ' -Djava.io.tmpdir=' + str(tmp),
         'GRADLE_USER_HOME': str(home / '.gradle'),
-        # Gradle 의 FSEvents 파일 감시는 샌드박스에서 시작되지 않아 경고만 낸다. 꺼서 조용히 한다.
+        # The Gradle FSEvents file watcher cannot start in the sandbox and only emits warnings. Turn it off to be quiet.
         'GRADLE_OPTS': '-Dorg.gradle.vfs.watch=false',
         'DISABLE_AUTOUPDATER': '1', 'DISABLE_TELEMETRY': '1',
         'DISABLE_ERROR_REPORTING': '1', 'DO_NOT_TRACK': '1',
@@ -309,7 +309,7 @@ def clean_environment(home, github=None):
         'OPENCODE_DISABLE_SHARE': 'true',
     }
     if not github:
-        # 토큰을 주지 않는 실행에서는 앞선 실행이 남긴 자격 증명 파일도 지운다(지속 격리 홈 공유 방지).
+        # On runs without a token, also delete a credential file left by an earlier run (no sharing via the persistent home).
         stale = home / '.git-credentials'
         if stale.is_symlink() or stale.exists():
             os.unlink(str(stale))
@@ -336,13 +336,13 @@ def clean_environment(home, github=None):
 
 
 def darwin_temporary_items():
-    """Foundation 이 원자적 쓰기에 쓰는 Darwin 사용자 임시 디렉터리의 TemporaryItems.
+    """TemporaryItems in the Darwin user temporary directory, which Foundation uses for atomic writes.
 
-    SwiftPM·llbuild 는 output-file-map 과 manifest 를 원자적으로 쓴다. 이 폴더에 쓰기만 열면 되고
-    읽기는 열지 않는다(스크린샷 같은 사용자 임시 파일이 여기 잠시 머문다). Foundation 은 TMPDIR 을
-    무시하고 confstr 로 이 경로를 얻는다.
+    SwiftPM and llbuild write the output-file-map and the manifest atomically. Only writes have to be opened for this
+    folder; reads are not opened (user temporary files such as screenshots briefly stay here). Foundation ignores TMPDIR
+    and obtains this path through confstr.
     """
-    # Python 의 confstr 는 이 이름을 모른다. getconf 가 같은 libc 호출을 한다.
+    # The confstr of Python does not know this name. getconf makes the same libc call.
     result = subprocess.run(['/usr/bin/getconf', 'DARWIN_USER_TEMP_DIR'], stdout=subprocess.PIPE, text=True, timeout=10)
     base = result.stdout.strip()
     if result.returncode or not base.startswith('/var/folders/') or any(c in base for c in '*?[]{}\\'):
@@ -351,11 +351,11 @@ def darwin_temporary_items():
 
 
 def darwin_temp_directories():
-    """NSTemporaryDirectory() 아래에 읽기·쓰기를 열어 줄 하위 디렉터리 이름(옵트인).
+    """Names of subdirectories under NSTemporaryDirectory() to open for reading and writing (opt-in).
 
-    cartograph 처럼 TMPDIR 을 무시하고 confstr 임시 디렉터리에 캐시를 두는 도구를 위한 것이다.
-    이름은 평범한 폴더 이름만 허용한다. `xcrun_db-*` 같은 호스트 도구 해석 캐시는 넣지 말 것:
-    샌드박스가 쓴 값이 호스트 xcrun 을 속일 수 있다.
+    This is for tools such as cartograph that ignore TMPDIR and keep their cache in the confstr temporary directory.
+    Only plain folder names are allowed. Do not add host tool resolution caches such as `xcrun_db-*`: a value written by
+    the sandbox could fool the host xcrun.
     """
     names = development_options().get('darwinTempDirectories', [])
     if not isinstance(names, list):
@@ -396,8 +396,8 @@ def sandbox_policy(workspace, home, domains, extra_reads=()):
         executable_reads.append(linked_python.parents[1])
     deny_secrets = [str(workspace / '**' / name) for name in SECRET_NAMES]
     temp_directories = darwin_temp_directories()
-    # Homebrew 는 도구(bin·Cellar·opt)를 위해 열지만 `var` 는 서비스 데이터(postgresql@16 DB·redis dump·로그)라 닫는다
-    # (2026-09-16 리뷰 HIGH, 사용자 승인). `etc` 는 ca-certificates·openssl 설정이라 Homebrew 도구의 TLS 에 필요해 유지.
+    # Homebrew is opened for tools (bin, Cellar, opt) but `var` is service data (postgresql@16 DB, redis dump, logs), closed
+    # (2026-09-16 review HIGH, user approved). `etc` is ca-certificates/openssl config, needed for TLS in Homebrew tools.
     deny_homebrew_data = ['/opt/homebrew/var']
     return {
         'network': {'allowedDomains': list(domains), 'deniedDomains': [],
@@ -406,8 +406,8 @@ def sandbox_policy(workspace, home, domains, extra_reads=()):
             'denyRead': ['/', *deny_secrets, *deny_homebrew_data],
             'allowRead': [*system_reads, *map(str, executable_reads), str(workspace), str(home),
                           *map(str, extra_reads), *temp_directories],
-            # TemporaryItems 는 쓰기만. Foundation 원자적 쓰기가 여기서 임시 파일을 만든다.
-            # 옵트인 임시 하위 디렉터리(cartograph 캐시 등)는 읽기·쓰기 모두.
+            # TemporaryItems is write-only. Foundation atomic writes create temporary files here.
+            # Opt-in temporary subdirectories (the cartograph cache and the like) get both read and write.
             'allowWrite': [str(workspace), str(home), darwin_temporary_items(), *temp_directories],
             'denyWrite': [*deny_secrets, str(workspace / '.git/hooks'), str(workspace / '.git/config'),
                           str(workspace / '.git/config.worktree'), str(workspace / '.git/info/attributes'),
@@ -455,7 +455,7 @@ def reap_control_directories(state):
 
 
 def free_loopback_port():
-    """호스트에서 지금 비어 있는 127.0.0.1 포트 하나. 세션 시작 뒤 충돌 가능성은 남지만 드물다."""
+    """One 127.0.0.1 port that is free on the host right now. A collision after the session starts stays possible but rare."""
     import socket
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
@@ -463,9 +463,9 @@ def free_loopback_port():
 
 
 def short_temp_directory(mode, workspace):
-    """모드·워크스페이스별 짧은 가드 소유 임시 디렉터리(`state/t/<7hex>`). 소켓 경로 한도 안에 들어야 한다.
+    """A short guard-owned temporary directory per mode and workspace (`state/t/<7hex>`). It must fit the socket path limit.
 
-    한도 계산: sun_path 104 바이트 - `/znr-<uuid>.sock`(46) = 57 자. 설치 경로 50 자 + 7 hex = 57.
+    Limit arithmetic: sun_path 104 bytes - `/znr-<uuid>.sock` (46) = 57 characters. Install path 50 characters + 7 hex = 57.
     """
     identity = hashlib.sha256((mode + '\0' + str(workspace)).encode()).hexdigest()[:7]
     directory = private_dir(private_dir(private_dir(ROOT / 'state') / 't') / identity)
@@ -475,7 +475,7 @@ def short_temp_directory(mode, workspace):
 
 
 def persistent_home(mode, workspace):
-    """모드·워크스페이스별 지속 격리 홈. run_confined 와 중계기가 같은 경로를 봐야 한다."""
+    """The persistent isolated home per mode and workspace. run_confined and the relay must see the same path."""
     identity = hashlib.sha256(str(workspace).encode()).hexdigest()[:20]
     state = private_dir(ROOT / 'state')
     return private_dir(private_dir(private_dir(state / 'homes') / mode) / identity)
@@ -501,11 +501,11 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         write_private_json(control / 'owner.json',
                            {'pid': os.getpid(), 'started': process_started_at(os.getpid())})
         home = private_dir(control / 'home') if ephemeral else persistent_home(mode, workspace)
-        # AutoClaw 처럼 승인 UI 없이 자동 승인으로 도는 런타임에는 GitHub 토큰을 주지 않는다.
+        # Runtimes that run on auto-approval with no approval UI, such as AutoClaw, are not given the GitHub token.
         env = clean_environment(home, github_token() if github else None)
         if short_tmpdir:
-            # 유닉스 소켓 경로는 sun_path 한도(104바이트)를 넘으면 EINVAL 이다. 격리 홈 tmp 는 88자라
-            # `$TMPDIR/znr-<uuid>.sock`(46자) 같은 소켓을 못 만든다. 짧은 가드 소유 tmp 를 대신 준다.
+            # A unix socket path over the sun_path limit (104 bytes) gives EINVAL. The isolated home tmp is 88 characters,
+            # so a socket like `$TMPDIR/znr-<uuid>.sock` (46 characters) cannot be created. Give it a short guard-owned tmp.
             short_tmp = short_temp_directory(mode, workspace)
             env.update({'TMPDIR': str(short_tmp), 'CLAUDE_CODE_TMPDIR': str(short_tmp),
                         'CLANG_MODULE_CACHE_PATH': str(short_tmp / 'clang-module-cache')})
@@ -514,8 +514,8 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
             raise GuardError('Development ports must be integers from 1024 to 65535.')
         dev_ports = list(dev_ports)
         if loopback_port:
-            # 에이전트 세션마다 전용 루프백 포트 하나. dart 커버리지의 VM 서비스처럼 로컬 포트가
-            # 꼭 필요한 도구가 무작위 포트 대신 이 포트를 쓰게 한다. 무작위 바인드는 계속 막힌다.
+            # One dedicated loopback port per agent session. Tools that really need a local port, such as the VM service
+            # of dart coverage, use this port instead of a random one. Random binds stay blocked.
             env['AGENT_GUARD_LOOPBACK_PORT'] = str(free_loopback_port())
             dev_ports.append(int(env['AGENT_GUARD_LOOPBACK_PORT']))
         env['AGENT_GUARD_DEV_PORTS'] = json.dumps(sorted(set(dev_ports)))
@@ -542,26 +542,28 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
                 shutil.copyfile(str(plugin), str(private_dir(config_directory / 'plugin') / Path(plugin).name))
             env.update({'HOME': str(configuration_home), 'XDG_CONFIG_HOME': str(config_root),
                         'OPENCODE_CONFIG_DIR': str(config_directory)})
-        # 자식이 실제로 읽는 config 디렉터리에 자격 증명을 하드링크한다. XDG_CONFIG_HOME 은
-        # 보호 모드면 runtime-home 으로 바뀌므로 여기서(확정 후) 링크해야 한다.
+        # Hardlink the credentials into the config directory the child actually reads. In protected mode XDG_CONFIG_HOME
+        # becomes runtime-home, so the link has to be made here, after it is final.
         for relative, source in config_credentials:
             if relative == 'dart/pub-credentials.json':
                 link_pub_credentials(env['XDG_CONFIG_HOME'], source)
             else:
                 hardlink_credential(source, Path(env['XDG_CONFIG_HOME']) / relative)
         if loopback_all:
-            # 워크스페이스별 옵트인: 임의 루프백 포트 바인드·수신·자기 접속을 연다(JVM 빌드용).
+            # Per-workspace opt-in: opens bind, listen and self-connect on arbitrary loopback ports (for JVM builds).
             env['AGENT_GUARD_LOOPBACK_ALL'] = '1'
         if allow_gradle_keystore:
-            # 워크스페이스별 옵트인: 파일명 `gradle.keystore` 만 시크릿 deny 예외(Gradle TestKit·config-cache 오탐).
-            # sandbox_runner 가 SRT 규칙 뒤에 그 파일명만 re-allow 하는 규칙을 붙인다(SBPL 마지막 매칭이 이긴다).
-            # denyWrite 는 allowWrite 를 이기므로 policy 로는 못 열고, 이 append 만 통한다. 다른 keystore 는 계속 deny.
+            # Per-workspace opt-in: only the file name `gradle.keystore` is exempt from the secret deny (Gradle TestKit and
+            # config-cache false positives). sandbox_runner appends a rule re-allowing just that file name after the SRT
+            # rules (the last SBPL match wins). denyWrite beats allowWrite, so the policy cannot open it and only this
+            # append gets through. Other keystores stay denied.
             env['AGENT_GUARD_GRADLE_KEYSTORE_ROOT'] = str(Path(workspace).resolve())
         policy = sandbox_policy(workspace, home, domains, extra_reads)
         if loopback_all:
             policy['network']['allowLocalBinding'] = True
-        # 옵트인 Darwin 임시 하위 폴더는 정책이 그 안만 열어 주고 `T/` 자체는 닫혀 있다. 호스트가 폴더를
-        # 정리해 없어지면 자식이 만들 수 없으니(cartograph 가 그 자리에서 죽는다) 감독자가 실행 전에 만든다.
+        # For opt-in Darwin temp subfolders the policy opens only their interior and `T/` itself stays closed. If the host
+        # cleans the folder away the child cannot create it (cartograph dies right there), so the supervisor creates it
+        # before launching.
         for directory in darwin_temp_directories():
             candidate = Path(directory)
             if candidate.is_symlink():
@@ -572,7 +574,7 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
             policy['filesystem']['allowWrite'].append(str(short_tmp))
         policy['filesystem']['denyWrite'].extend(str(home / p) for p in read_only_home_paths)
         policy['filesystem']['denyWrite'].append(str(home / '.gitconfig'))
-        # 워크스페이스 안이라도 에이전트 자신의 설정 파일(훅·MCP)은 자식이 만들거나 바꾸지 못한다.
+        # Even inside the workspace, the child cannot create or change the configuration files of the agent itself (hooks, MCP).
         policy['filesystem']['denyWrite'].extend(str(Path(workspace) / p) for p in read_only_workspace_paths)
         if configuration_home is not None:
             policy['filesystem']['allowRead'].append(str(configuration_home))
@@ -580,15 +582,15 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
             policy['filesystem']['denyWrite'].extend(str(configuration_home / p) for p in ['.config/opencode', '.opencode'])
         if private_sockets:
             policy['network']['allowUnixSockets'] = [str(home / 'tmp')] + ([str(short_tmp)] if short_tmp is not None else [])
-        # 세션이 자기 경계를 알도록 실제 정책 값으로 안내문을 만들고 잠근다.
-        # 매 실행마다 덮어써서 이전 세션이 남긴 조작본이 로드되지 않게 한다.
-        # 샌드박스 안의 훅도 이 모듈을 import 하므로 호스트 전용 의존성은 여기서만 읽는다.
+        # Build the notice from the actual policy values and lock it, so the session knows its own boundaries.
+        # Overwrite it on every run so a tampered copy left by a previous session is never loaded.
+        # The hook inside the sandbox imports this module too, so host-only dependencies are read only here.
         sys.path.insert(0, str(ROOT))
         import environment_notice
         notice_targets = [(home, environment_notice.NOTICE_FILE_NAME),
                           *((home, relative) for relative in instruction_files)]
         if config_directory is not None:
-            # 자식의 $HOME 은 runtime-home 이므로 그곳에도 같은 안내문을 둔다.
+            # The $HOME of the child is runtime-home, so the same notice is placed there as well.
             notice_targets.append((configuration_home, environment_notice.NOTICE_FILE_NAME))
             notice_targets.append((configuration_home, '.config/opencode/AGENTS.md'))
         write_environment_notice(notice_targets,
@@ -611,13 +613,13 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
 
 
 def write_environment_notice(targets, text):
-    """안내문을 (격리 루트, 상대 경로) 쌍마다 링크 안전하게 0600 으로 다시 쓴다."""
+    """Rewrite the notice link-safely with mode 0600 for every (isolated root, relative path) pair."""
     for root, relative in targets:
         write_private_file(root, relative, text)
 
 
 def compatibility_manifest():
-    """검토된 바이너리 해시 매니페스트. 없으면 모든 백엔드가 닫힌다. 호출 시점의 ROOT 를 쓴다."""
+    """The reviewed binary hash manifest. Without it every backend closes. Uses ROOT as of the time of the call."""
     return ROOT / 'state/compatibility.json'
 
 
@@ -636,10 +638,11 @@ def verify_opencode_binary():
 
 
 def verify_kimi_binary():
-    """Kimi Code 바이너리가 검토된 해시와 같을 때만 버전을 돌려준다. 기준선이 없으면 닫힌다.
+    """Returns the version only when the Kimi Code binary matches the reviewed hash. Without a baseline it closes.
 
-    왜 해시인가. `~/.kimi-code/bin/kimi` 는 자동 갱신 대상이라 내용이 바뀔 수 있다. 바뀐 바이너리는
-    클립보드·네트워크 동작이 다를 수 있으므로 `agent-guard verify-updates` 로 다시 검토한 뒤에만 띄운다.
+    Why a hash. `~/.kimi-code/bin/kimi` is subject to auto-update, so its contents can change. A changed binary may behave
+    differently around the clipboard and the network, so it is launched only after `agent-guard verify-updates` has
+    reviewed it again.
     """
     manifest = compatibility_manifest()
     if not manifest.is_file():
@@ -683,15 +686,15 @@ def verify_zcode_binary():
 
 
 def autoclaw_profile():
-    """검토된 AutoClaw 앱 버전·번들 CLI 버전·허용 도메인. 없으면 백엔드가 닫힌다."""
+    """The reviewed AutoClaw app version, bundled CLI version and allowed domains. Without it the backend closes."""
     path = ROOT / 'state/autoclaw-profile.json'
     if not path.is_file():
-        raise GuardError('AutoClaw guard profile is missing; run install_autoclaw.py first.')
+        raise GuardError('AutoClaw guard profile is missing; run adapters/install_autoclaw.py first.')
     return json.loads(path.read_text())
 
 
 def file_sha256(path):
-    """큰 바이너리를 블록 단위로 읽어 sha256 을 구한다."""
+    """Reads a large binary block by block to compute its sha256."""
     digest = hashlib.sha256()
     with Path(path).open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
@@ -700,10 +703,11 @@ def file_sha256(path):
 
 
 def verify_autoclaw_binary():
-    """AutoClaw 앱 버전과 번들 Zcode CLI 를 기록된 기준선과 대조한다. 검토된 CLI 버전을 돌려준다.
+    """Compares the AutoClaw app version and bundled Zcode CLI with the recorded baseline. Returns the reviewed CLI version.
 
-    AutoClaw 는 플러그인 `command` 가 설정되면 자체 해시 검사를 건너뛴다. 그 검사를 여기서 대신 하되,
-    앱이 갱신되면 매니페스트도 함께 바뀌므로 매니페스트가 아니라 우리 기준선(compatibility.json)이 기준이다.
+    AutoClaw skips its own hash check when the plugin `command` is configured. That check is done here instead, but since
+    the manifest changes together with the app when it updates, the reference is our baseline (compatibility.json), not
+    the manifest.
     """
     profile = autoclaw_profile()
     with (AUTOCLAW_APP / 'Contents/Info.plist').open('rb') as stream:
@@ -715,14 +719,14 @@ def verify_autoclaw_binary():
         raise GuardError('AutoClaw compatibility baseline is missing; run local verification before launching.')
     baseline = json.loads(manifest.read_text()).get('autoclaw')
     if baseline is None:
-        raise GuardError('AutoClaw compatibility baseline has no autoclaw entry; run install_autoclaw.py first.')
+        raise GuardError('AutoClaw compatibility baseline has no autoclaw entry; run adapters/install_autoclaw.py first.')
     bundled = json.loads((AUTOCLAW_APP / 'Contents/Resources/zcode/manifest.json').read_text())
     cli_version = profile['zcodeCliVersion']
     if bundled.get('zcodeCliVersion') != cli_version or baseline.get('zcodeCliVersion') != cli_version:
         raise GuardError('AutoClaw bundles a different Zcode CLI version; re-verify before launching.')
     artifact = bundled.get('artifacts', {}).get('darwin-arm64', {})
-    # 매니페스트는 앱 디렉터리 안의 사용자 쓰기 가능 파일이다. 해시할 파일을 매니페스트가 고르게 두면
-    # 실행될 바이너리와 다른 파일을 검증하게 된다. 실제로 실행하는 고정 경로만 대조한다.
+    # The manifest is a user-writable file inside the app directory. Letting the manifest choose which file to hash would
+    # verify a file other than the binary that will run. Only the fixed path that actually runs is compared.
     if artifact.get('file') != 'darwin-arm64/zcode':
         raise GuardError('AutoClaw manifest names a different Zcode binary; re-verify before launching.')
     digest = file_sha256(autoclaw_bundled_binary())
@@ -732,18 +736,19 @@ def verify_autoclaw_binary():
 
 
 def autoclaw_bundled_binary():
-    """검증·복제 대상인 번들 CLI 의 고정 경로. 매니페스트가 아니라 앱 경로에서만 파생한다."""
+    """The fixed path of the bundled CLI that is verified and cloned. Derived only from the app path, not the manifest."""
     return AUTOCLAW_APP / 'Contents/Resources/zcode/darwin-arm64/zcode'
 
 
 def stage_autoclaw_binary():
-    """번들 CLI 를 가드 소유 경로로 복제하고 복제본의 해시를 기준선과 대조한 뒤 그 경로를 돌려준다.
+    """Clones the bundled CLI into a guard-owned path, compares the hash of the clone with the baseline, returns that path.
 
-    검증과 실행 사이에 앱 디렉터리(사용자 쓰기 가능)의 파일이 바뀌어도 실행되는 것은 이 복제본이다.
-    APFS clonefile(`cp -c`)이라 199 MB 여도 즉시 끝나고, 복제본은 원본 쓰기의 영향을 받지 않는다.
+    Even if the file in the app directory (user-writable) changes between verification and execution, what runs is this
+    clone. Because it is an APFS clonefile (`cp -c`) it finishes instantly even at 199 MB, and the clone is unaffected by
+    writes to the original.
     """
     baseline = json.loads(compatibility_manifest().read_text()).get('autoclaw') or {}
-    # 실행마다 전용 디렉터리: 동시 실행이 서로의 검증된 복제본을 지우거나 바꿔치기하지 못한다.
+    # A dedicated directory per launch: concurrent launches cannot delete or swap each other verified clone.
     runtime = private_dir(ROOT / 'state/autoclaw-runtime')
     reap_dead_launch_directories(runtime)
     directory = Path(tempfile.mkdtemp(prefix='launch-' + str(os.getpid()) + '-', dir=str(runtime)))
@@ -763,7 +768,7 @@ def stage_autoclaw_binary():
 
 
 def reap_dead_launch_directories(runtime):
-    """소유 프로세스가 사라진 `launch-<pid>-*` 디렉터리를 치운다. SIGTERM 으로 finally 없이 끝난 실행의 잔재다."""
+    """Cleans up `launch-<pid>-*` directories whose owner process is gone: leftovers of runs ended by SIGTERM without finally."""
     for entry in runtime.iterdir():
         parts = entry.name.split('-')
         if entry.is_symlink() or not entry.is_dir() or len(parts) < 3 or parts[0] != 'launch' or not parts[1].isdigit():
@@ -778,11 +783,11 @@ def reap_dead_launch_directories(runtime):
 
 
 def stage_kimi_binary():
-    """Kimi 바이너리를 가드 소유 경로로 복제하고 복제본 해시를 기준선과 대조한 뒤 그 경로를 돌려준다.
+    """Clones the Kimi binary into a guard-owned path, compares the hash of the clone with the baseline, returns that path.
 
-    `verify_kimi_binary` 의 해시 검사와 실행 사이에 `~/.kimi-code/bin/kimi`(자동 갱신 대상, 사용자 쓰기 가능)가
-    바뀌면 검토되지 않은 바이너리가 뜬다(리뷰 MEDIUM). AutoClaw 와 같은 방식으로 APFS clonefile 복제본을 검증하고
-    그 복제본만 실행한다. 실행 뒤 `discard_staged_binary` 로 치운다.
+    If `~/.kimi-code/bin/kimi` (subject to auto-update, user-writable) changes between the hash check of
+    `verify_kimi_binary` and execution, an unreviewed binary comes up (review MEDIUM). As with AutoClaw, an APFS clonefile
+    clone is verified and only that clone is executed. Afterwards it is cleaned up by `discard_staged_binary`.
     """
     baseline = json.loads(compatibility_manifest().read_text()).get('kimi') or {}
     runtime = private_dir(ROOT / 'state/kimi-runtime')
@@ -803,14 +808,14 @@ def stage_kimi_binary():
 
 
 def discard_staged_binary(staged):
-    """실행이 끝난 복제본과 그 전용 디렉터리를 치운다(AutoClaw·Kimi 런타임 디렉터리만)."""
+    """Cleans up the clone of a finished run and its dedicated directory (AutoClaw and Kimi runtime directories only)."""
     directory = Path(staged).parent
     if directory.parent in (ROOT / 'state/autoclaw-runtime', ROOT / 'state/kimi-runtime'):
         shutil.rmtree(directory, ignore_errors=True)
 
 
 def executable_path(pid):
-    """커널이 아는 실행 파일 경로(proc_pidpath). ps 의 comm 은 프로세스가 제목으로 바꿀 수 있어 쓰지 않는다."""
+    """The executable path the kernel knows (proc_pidpath). The comm of ps is not used: a process can change it to a title."""
     import ctypes
     library = ctypes.CDLL('/usr/lib/libproc.dylib')
     buffer = ctypes.create_string_buffer(4096)
@@ -819,7 +824,7 @@ def executable_path(pid):
 
 
 def listener_pids_from_netstat(text, port):
-    """`netstat -anv -p tcp` 출력에서 이 포트를 LISTEN 하는 프로세스 PID(어느 주소든). 정렬된 고유 목록."""
+    """PIDs of processes LISTENing on this port (on any address) from `netstat -anv -p tcp` output. A sorted unique list."""
     pids = set()
     suffix = '.' + str(port)
     for line in text.splitlines():
@@ -837,10 +842,11 @@ def listener_pids_from_netstat(text, port):
 
 
 def listener_executables(port):
-    """이 포트를 듣는 프로세스들의 실행 파일 경로. 조회가 실패하거나 시간을 넘기면 [''](닫힘).
+    """Executable paths of the processes listening on this port. On a failed or timed-out lookup, [''] (fail-closed).
 
-    lsof 는 모든 프로세스의 fd 를 훑어 JVM 같은 큰 프로세스가 있으면 수십 초가 걸릴 수 있다. netstat 은 커널
-    테이블을 바로 읽어 0.01초다. 주소 필터 없이 포트 전체를 본다(0.0.0.0/::1 리스너도 같은 포트를 받는다).
+    lsof scans the fds of every process and can take tens of seconds when a large process such as a JVM is around. netstat
+    reads the kernel table directly and takes 0.01 s. The whole port is looked at without an address filter (0.0.0.0 and
+    ::1 listeners receive the same port).
     """
     try:
         listing = subprocess.run(['/usr/sbin/netstat', '-anv', '-p', 'tcp'], capture_output=True, text=True, timeout=10)
@@ -848,14 +854,15 @@ def listener_executables(port):
         return ['']
     if listing.returncode != 0:
         return ['']
-    # 경로를 못 구한 프로세스는 빈 문자열로 남긴다. 호출자가 그것을 보고 닫아야지, 조용히 버리면 안 된다.
+    # A process whose path could not be obtained is left as an empty string. The caller has to see that and close; it must
+    # not be silently dropped.
     return [executable_path(pid) for pid in listener_pids_from_netstat(listing.stdout, port)]
 
 
 def verify_broker_owner(port):
-    """브로커 포트의 리스너가 AutoClaw 앱 안의 실행 파일일 때만 그 포트를 연다.
+    """Opens the broker port only when the listener on it is an executable inside the AutoClaw app.
 
-    URL 모양 검사만으로는 호스트 설정이 가리키는 임의의 로컬 서비스(SOCKS 프록시 등)를 열어 줄 수 있다.
+    Checking the URL shape alone could open an arbitrary local service the host configuration points at (a SOCKS proxy).
     """
     owners = listener_executables(port)
     prefix = str(AUTOCLAW_APP) + '/'
@@ -864,10 +871,10 @@ def verify_broker_owner(port):
 
 
 def autoclaw_broker_port(env):
-    """게이트웨이가 넘긴 모델 브로커 URL 두 개에서 루프백 포트 하나를 얻는다.
+    """Obtains a single loopback port from the two model broker URLs handed over by the gateway.
 
-    플러그인이 요구하는 형태(http, 127.0.0.1, 고정 경로)를 그대로 검사하고 두 URL 의 포트가 같아야 한다.
-    이 포트만 격리 정책의 outbound 허용에 들어간다.
+    The shape the plugin requires (http, 127.0.0.1, a fixed path) is checked as is, and the two URLs must agree on the port.
+    Only this port enters the outbound allowance of the isolation policy.
     """
     from urllib.parse import urlsplit
     expected = {'AUTOCLAW_MODEL_BROKER_OPENAI_BASE_URL': '/internal/model-proxy/v1',
@@ -892,17 +899,20 @@ def autoclaw_broker_port(env):
     return ports.pop()
 
 
-AUTOCLAW_NOTICE = ('## AutoClaw 코딩 런타임\n\n'
-                   '이 세션은 AutoClaw(z.ai) 데스크톱의 코딩 기능이 띄운 Zcode CLI 이며 Zcode Safe 와 같은 격리 안에 있다. '
-                   '모델 호출은 AutoClaw 의 로컬 모델 브로커(루프백 포트)로만 나가고 API 키는 이 환경에 없다. '
-                   'AutoClaw 는 승인 프롬프트 없이 자동 승인하므로 riskgate 의 `deny` 만 실제로 막힌다. '
-                   '저장소 범위로 제한된 GitHub 토큰이 `GH_TOKEN` 과 격리 홈 `.git-credentials` 로 들어 있어 push·PR 이 되지만, '
-                   '확인 절차가 없으니 push·PR·force-push 는 사용자가 그 턴에 명시적으로 시켰을 때만 한다.\n\n')
+AUTOCLAW_NOTICE = ('## AutoClaw coding runtime\n\n'
+                   'This session is the Zcode CLI launched by the coding feature of the AutoClaw (z.ai) desktop app, and '
+                   'it sits in the same isolation as Zcode Safe. '
+                   'Model calls go out only through the local model broker of AutoClaw (a loopback port) and no API key '
+                   'exists in this environment. '
+                   'AutoClaw auto-approves without an approval prompt, so only `deny` from riskgate actually blocks. '
+                   'A repository-scoped GitHub token is present in `GH_TOKEN` and in the isolated home `.git-credentials`, '
+                   'so push and PR work, but there is no confirmation step, so do push, PR and force-push only when the '
+                   'user explicitly asked for it in that turn.\n\n')
 
 
 def doctor():
     sys.path.insert(0, str(ROOT))
-    from compatibility_check import candidate
+    from adapters.compatibility_check import candidate
     current = candidate()
     saved = json.loads((ROOT / 'state/compatibility.json').read_text())
     result = {'opencode': {'version': current['opencode']['version'], 'verified': current['opencode'] == saved.get('opencode')},
@@ -930,12 +940,12 @@ def development_options():
     reviewed = {'registry.npmjs.org:443', 'pypi.org:443', 'files.pythonhosted.org:443',
                 'github.com:443', 'codeload.github.com:443', 'api.github.com:443',
                 'objects.githubusercontent.com:443', 'raw.githubusercontent.com:443',
-                # GitHub 릴리스 자산은 이제 이 호스트로 리다이렉트된다. OpenCode 의 ripgrep 다운로드가 여기서 막혀
-                # 모든 세션의 glob·grep 도구가 실패했다.
+                # GitHub release assets are now redirected to this host. The ripgrep download of OpenCode was blocked
+                # here, which made the glob and grep tools of every session fail.
                 'release-assets.githubusercontent.com:443',
                 'pub.dev:443', 'storage.googleapis.com:443',
-                # Gradle/Maven(JVM). 배포판은 services.gradle.org → github 릴리스, mavenCentral() 은 repo.maven.apache.org,
-                # 플러그인 포털, google() 은 dl.google.com/maven.google.com.
+                # Gradle/Maven (JVM). Distributions come from services.gradle.org -> github releases, mavenCentral()
+                # from repo.maven.apache.org, the plugin portal, and google() from dl.google.com/maven.google.com.
                 'services.gradle.org:443', 'repo.maven.apache.org:443', 'repo1.maven.org:443',
                 'plugins.gradle.org:443', 'plugins-artifacts.gradle.org:443', 'dl.google.com:443', 'maven.google.com:443'}
     if not set(data['packageDomains']) <= reviewed:
@@ -961,15 +971,15 @@ def prompt_telemetry_enabled():
     return json.loads(manifest.read_text()).get('promptedCommands') is True
 
 
-# 리뷰어 기본 모델. 새 격리 홈에는 선택된 모델이 없어 공급자 기본값이 잡히는데, 그 모델은
-# system 역할을 거부해 400 이 났다. safecode 에서 실제 쓰는 모델을 명시한다.
+# Default reviewer model. A fresh isolated home has no selected model, so the provider default was picked, and that model
+# rejected the system role and returned 400. State the model that safecode actually uses.
 DEFAULT_REVIEW_MODEL = 'alibaba-token-plan/qwen3.8-max'
 
 
 def review_config(base, model=DEFAULT_REVIEW_MODEL):
-    """가드 소유 OpenCode 설정에 읽기 전용 `review` 에이전트를 더한 리뷰어 설정.
+    """The reviewer configuration: the guard-owned OpenCode config plus a read-only `review` agent.
 
-    도구를 모두 끄면 모델이 워크스페이스를 읽기만 할 수 있다. 원본 설정 파일은 바꾸지 않는다.
+    With every tool turned off the model can only read the workspace. The original configuration file is not changed.
     """
     if not isinstance(model, str) or model.count('/') != 1 or not all(c.isalnum() or c in './_-' for c in model):
         raise GuardError('reviewModel must look like provider/model.')
@@ -980,7 +990,7 @@ def review_config(base, model=DEFAULT_REVIEW_MODEL):
         'mode': 'primary',
         'model': model,
         'tools': {name: False for name in disabled},
-        # 비대화형 run 에서는 권한 요청이 자동 거부되므로 읽기 도구만 미리 허용한다.
+        # In a non-interactive run permission requests are auto-denied, so only the read tools are allowed up front.
         'permission': {'read': 'allow', 'glob': 'allow', 'grep': 'allow', 'list': 'allow'},
         'prompt': 'You are a meticulous code reviewer. You may only read files. Never modify, create, or run anything.',
     }
@@ -988,7 +998,7 @@ def review_config(base, model=DEFAULT_REVIEW_MODEL):
 
 
 def run_opencode_review(workspace, prompt, stdout=None):
-    """별도 격리 홈에서 읽기 전용 Qwen 리뷰어를 비대화형으로 돌린다. 출력은 JSON 이벤트 줄이다."""
+    """Runs the read-only Qwen reviewer non-interactively in a separate isolated home. Output is JSON event lines."""
     verify_opencode_binary()
     development = development_options()
     profile = load_opencode_profile()
@@ -997,7 +1007,7 @@ def run_opencode_review(workspace, prompt, stdout=None):
     if not auth_file.is_file():
         raise GuardError('Selected OpenCode credentials have not been imported yet.')
     config_file = ROOT / 'state/opencode-review-config.json'
-    # 실행마다 기본 설정에서 다시 만든다. write_private_json 은 O_EXCL 이라 먼저 지운다.
+    # Rebuilt from the base configuration on every run. write_private_json is O_EXCL, so it is deleted first.
     if config_file.exists():
         config_file.unlink()
     settings = packet_relay_settings() or {}
@@ -1013,14 +1023,14 @@ def run_opencode_review(workspace, prompt, stdout=None):
                         protect_opencode_config=True, stdout=stdout)
 
 
-# pub.dev 는 macOS 에서 $HOME/Library/Application Support/dart 의 OAuth 자격 증명을 읽는다.
+# On macOS, pub.dev reads the OAuth credentials in $HOME/Library/Application Support/dart.
 PUB_CREDENTIALS = OWNER_HOME / 'Library/Application Support/dart/pub-credentials.json'
-# 업로드는 pub.dev 와 storage.googleapis.com, 만료된 액세스 토큰 갱신은 Google OAuth 엔드포인트.
+# Uploads go to pub.dev and storage.googleapis.com; refreshing an expired access token goes to the Google OAuth endpoints.
 PUB_PUBLISH_DOMAINS = ['pub.dev:443', 'storage.googleapis.com:443', 'accounts.google.com:443', 'oauth2.googleapis.com:443']
 
 
 def pub_publish_settings():
-    """옵트인 pub 게시 설정. 파일이 없거나 형식이 다르면 None."""
+    """Opt-in pub publishing settings. None if the file is missing or has a different format."""
     manifest = ROOT / 'state/pub-publish.json'
     if not manifest.is_file():
         return None
@@ -1029,9 +1039,9 @@ def pub_publish_settings():
 
 
 def pub_publish_grant(workspace):
-    """이 워크스페이스에 pub 게시가 허용됐으면 설정을, 아니면 None.
+    """The settings if pub publishing is allowed for this workspace, otherwise None.
 
-    자격 증명은 계정 단위라 패키지별로 좁힐 수 없으므로 워크스페이스 목록으로 범위를 정한다.
+    The credentials are per account and cannot be narrowed per package, so the scope is set by a workspace list.
     """
     settings = pub_publish_settings()
     if not settings or settings.get('enabled') is not True:
@@ -1044,11 +1054,11 @@ def pub_publish_grant(workspace):
 
 
 def loopback_grant(workspace):
-    """이 워크스페이스에 루프백 전체 개방이 허가됐는가(`state/loopback-grants.json`, 옵트인).
+    """Whether full loopback opening is granted for this workspace (`state/loopback-grants.json`, opt-in).
 
-    Gradle 같은 JVM 빌드는 데몬·파일 잠금·컴파일 데몬·테스트 워커가 임의 루프백 포트로 통신하고 Seatbelt 는
-    포트 범위를 받지 않는다. 그래서 워크스페이스 단위로만 연다. 열린 세션은 같은 사용자의 다른 로컬
-    서비스에도 접속할 수 있으므로 안내문이 이를 알린다.
+    In JVM builds such as Gradle the daemon, file locks, the compile daemon and test workers talk over arbitrary loopback
+    ports, and Seatbelt does not accept port ranges. So it is opened per workspace only. An opened session can also reach
+    other local services of the same user, so the notice announces this.
     """
     manifest = ROOT / 'state/loopback-grants.json'
     if not manifest.is_file():
@@ -1061,11 +1071,13 @@ def loopback_grant(workspace):
 
 
 def gradle_keystore_grant(workspace):
-    """이 워크스페이스에서 파일명 `gradle.keystore` 만 시크릿 deny 예외로 허가됐는가(`state/gradle-keystore-grants.json`, 옵트인).
+    """Whether the file name `gradle.keystore` alone is granted as a secret-deny exception in this workspace
+    (`state/gradle-keystore-grants.json`, opt-in).
 
-    Gradle TestKit·configuration-cache 는 무결성 검증용 `gradle.keystore` 를 워크스페이스 안 build 아래에 만드는데,
-    그 이름이 SECRET_NAMES 의 `*.keystore` 에 걸려 오탐으로 막힌다. 진짜 서명 키스토어(release.keystore·*.jks 등)와
-    다른 시크릿은 계속 보호하려고 파일명 하나만, 워크스페이스 단위로만 연다.
+    Gradle TestKit and configuration-cache create a `gradle.keystore` for integrity verification under build inside the
+    workspace, and that name is caught by `*.keystore` in SECRET_NAMES and blocked as a false positive. To keep protecting
+    real signing keystores (release.keystore, *.jks and so on) and other secrets, only one file name is opened, and only
+    per workspace.
     """
     manifest = ROOT / 'state/gradle-keystore-grants.json'
     if not manifest.is_file():
@@ -1078,11 +1090,12 @@ def gradle_keystore_grant(workspace):
 
 
 def hardlink_credential(source, target):
-    """호스트 자격 증명 파일을 격리 홈 경로에 하드링크한다.
+    """Hardlinks a host credential file to a path in the isolated home.
 
-    왜 하드링크인가. 클라이언트가 토큰을 갱신하면 같은 파일을 제자리에서 다시 쓴다. 심볼릭 링크는
-    호스트 경로로 풀려 샌드박스 쓰기 정책에 막히고, 복사본은 호스트와 갈라진다. 같은 inode 를 격리
-    홈 경로로 두면 갱신이 양쪽에 반영된다. 내용은 읽지 않는다. source 는 0600·본인 소유여야 한다.
+    Why a hardlink. When the client refreshes the token it rewrites the same file in place. A symlink resolves to the host
+    path and is blocked by the sandbox write policy, and a copy diverges from the host. Placing the same inode at a path
+    in the isolated home makes the refresh visible on both sides. The contents are not read. source must be 0600 and owned
+    by you.
     """
     source, target = Path(source), Path(target)
     if not source.is_file() or source.is_symlink():
@@ -1102,10 +1115,10 @@ def hardlink_credential(source, target):
 
 
 def link_pub_credentials(config_home, source=None):
-    """pub.dev 자격 증명을 자식의 config 디렉터리(`$XDG_CONFIG_HOME/dart`)에 하드링크한다.
+    """Hardlinks the pub.dev credentials into the config directory of the child (`$XDG_CONFIG_HOME/dart`).
 
-    dart 는 XDG_CONFIG_HOME 이 설정되면 macOS 기본 경로 대신 그것을 쓴다. 샌드박스는 항상 이를
-    설정하므로 여기에 두어야 pub 이 로컬 소켓 OAuth 대신 저장된 토큰으로 게시한다.
+    When XDG_CONFIG_HOME is set, dart uses it instead of the macOS default path. The sandbox always sets it, so the
+    credentials have to go here for pub to publish with the stored token instead of local-socket OAuth.
     """
     source = Path(source) if source is not None else PUB_CREDENTIALS
     if not source.is_file() or source.is_symlink():
@@ -1114,7 +1127,7 @@ def link_pub_credentials(config_home, source=None):
 
 
 def packet_relay_settings():
-    """옵트인 packet-ask 중계 설정. 켜져 있지 않으면 None."""
+    """Opt-in packet-ask relay settings. None if it is not enabled."""
     manifest = ROOT / 'state/packet-relay.json'
     if not manifest.is_file():
         return None
@@ -1131,7 +1144,7 @@ def orca_integration():
     if not hooks:
         return None  # Not launched from an Orca terminal.
     sys.path.insert(0, str(ROOT))  # -I keeps the script directory off sys.path.
-    from orca_broker import host_coordinates, usable
+    from adapters.orca_broker import host_coordinates, usable
     plugin = Path(hooks) / 'plugins/orca-opencode-status.js'
     coordinates = host_coordinates()
     if not plugin.is_file() or not usable(coordinates):
@@ -1210,7 +1223,7 @@ def launch_zcode_app():
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if running.returncode == 0:
         subprocess.run(['/usr/bin/osascript', '-e',
-                        'display alert "Zcode Safe" message "Zcode를 완전히 종료한 뒤 이 실행기를 다시 열어 주세요. 기존 세션은 자동 종료하지 않습니다."'],
+                        'display alert "Zcode Safe" message "Quit Zcode completely, then reopen this launcher. Existing sessions are not closed automatically."'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         raise GuardError('Quit the existing Zcode application before starting Zcode Safe.')
     if running.returncode != 1:
@@ -1239,7 +1252,7 @@ def setup_github_token():
         raise GuardError('Run agent-guard setup-github-token in macOS Terminal. '
                          'Never paste the token into the agent chat.')
     import getpass
-    token = getpass.getpass('GitHub fine-grained token (입력은 표시되지 않습니다): ').strip()
+    token = getpass.getpass('GitHub fine-grained token (input is not displayed): ').strip()
     if not token or len(token) < 20 or any(c.isspace() for c in token):
         raise GuardError('That does not look like a token; nothing was written.')
     private_dir(ROOT / 'state')
@@ -1319,7 +1332,7 @@ def read_packet_glm_keychain():
 
 
 def prepare_packet_request(arguments, use_keychain=False):
-    # 어댑터(packet_entry.py)는 샌드박스 안에서 파일을 읽지 않고 이 값과 설치본을 대조한다.
+    # The adapter (packet_entry.py) does not read the file inside the sandbox; it compares this value with the installation.
     env = {'PACKET_ASK_CLAUDE_BIN': str(CLAUDE.resolve()),
            'AGENT_GUARD_PACKET_ASK_VERSION': packet_ask_pinned_version()}
     if arguments[0] in {'inspect', 'providers', 'doctor'}:
@@ -1352,11 +1365,13 @@ LAUNCH_LOG_TAIL = 16 * 1024
 
 
 def record_launch_stage(name, cwd):
-    """시도별 단계 기록(append). 마지막 시도가 덮어쓰는 영수증과 달리 실패한 시도의 마지막 단계가 남는다.
+    """Per-attempt stage record (append). Unlike the receipt, which the last attempt overwrites, the last stage of a
+    failed attempt survives here.
 
-    200 KB 를 넘으면 마지막 16 KB 만 남기고 줄인다 — 통째로 비우면 같은 기동의 런처 셸 `sh-start` 줄이 사라져
-    "python-start 는 있는데 sh-start 없음" 으로 오독된다. cwd 의 제어문자는 이스케이프해 한 레코드가 한 줄이 되게 한다
-    (`python-start` 는 workspace_path 검사 이전에 기록된다). 로그 자리가 FIFO 면 열기에서 멈추지 않고(O_NONBLOCK) 건너뛴다.
+    Past 200 KB it is trimmed to the last 16 KB only - emptying it completely would drop the `sh-start` line of the
+    launcher shell of the same startup and be misread as "python-start is there but sh-start is missing". Control
+    characters in cwd are escaped so that one record is one line (`python-start` is recorded before the workspace_path
+    check). If the log slot is a FIFO, opening does not block (O_NONBLOCK) and it is skipped.
     """
     directory = private_dir(ROOT / 'state/runtime')
     path = directory / 'autoclaw-launches.log'
@@ -1381,29 +1396,32 @@ def record_launch_stage(name, cwd):
 
 
 def record_autoclaw_stage(name):
-    """AutoClaw 기동 단계를 영수증(마지막 실행)과 시도별 로그 둘 다에 남긴다.
+    """Records an AutoClaw startup stage both in the receipt (the last run) and in the per-attempt log.
 
-    핸드셰이크 한도 안에 못 뜨면 어느 단계에서 멈췄는지 이걸로 본다. 순서는 런처 셸의 `sh-start` →
-    `python-start`(argparse 이전) → `started` → verified → broker-checked → workspace-checked → staged → launching.
+    If it does not come up within the handshake limit, this is what shows which stage it stopped at. The order is
+    `sh-start` of the launcher shell -> `python-start` (before argparse) -> `started` -> verified -> broker-checked ->
+    workspace-checked -> staged -> launching.
     """
     runtime_status('autoclaw-stage.json', {'pid': os.getpid(), 'stage': name, 'at': time.time()})
     record_launch_stage(name, os.getcwd())
 
 
 def is_autoclaw_agent_server_call(arguments):
-    """런처가 넘긴 인자가 `autoclaw-backend agent-server` 호출인지. version 프로브는 단계를 기록하지 않는다.
+    """Whether the arguments handed over by the launcher are an `autoclaw-backend agent-server` call. A version probe
+    records no stage.
 
-    런처 셸의 `[ "$1" = agent-server ]` 와 같은 기준(첫 인자만)이어야 한다 — 다르면 `sh-start` 없는 `python-start` 를
-    셸 단계 손실로 오독한다.
+    It has to use the same criterion as `[ "$1" = agent-server ]` of the launcher shell (the first argument only) -
+    otherwise a `python-start` without `sh-start` is misread as a lost shell stage.
     """
     return arguments[:2] == ['autoclaw-backend', 'agent-server']
 
 
 def run_autoclaw_backend(remaining):
-    """AutoClaw zcode-runtime 플러그인이 부르는 두 진입점.
+    """The two entry points the AutoClaw zcode-runtime plugin calls.
 
-    `version`: 번들 CLI 를 실행하지 않고 해시 검증을 통과한 검토 버전을 출력한다(플러그인은 마지막 토큰만 본다).
-    `agent-server`: cwd 를 워크스페이스로 검사하고 번들 CLI 를 Zcode 백엔드와 같은 격리로 띄운다.
+    `version`: prints the reviewed version that passed hash verification, without running the bundled CLI (the plugin
+    looks at the last token only).
+    `agent-server`: checks cwd as a workspace and launches the bundled CLI in the same isolation as the Zcode backend.
     """
     if remaining == ['version']:
         print(verify_autoclaw_binary())
@@ -1430,18 +1448,18 @@ def run_autoclaw_backend(remaining):
     relay = None
     if relay_settings is not None:
         sys.path.insert(0, str(ROOT))
-        from packet_relay import PacketRelay
+        from adapters.packet_relay import PacketRelay
         relay = PacketRelay(workspace, persistent_home('autoclaw', workspace), settings=relay_settings)
 
     def prepare_autoclaw(home, env):
         private_dir(private_dir(home / '.zcode') / 'cli')
         if relay is not None:
             relay.prepare(home, env)
-        # 번들 CLI 는 설정을 HOME 기준으로 찾는다. ZCODE_HOME 은 zcode-backend 와의 일관성용이다.
+        # The bundled CLI looks for its configuration relative to HOME. ZCODE_HOME is for consistency with zcode-backend.
         env.update({'ZCODE_HOME': str(home / '.zcode'),
                     'AGENT_GUARD_BACKEND': 'zcode-v1', 'AGENT_GUARD_BOOTSTRAP': 'zcode',
                     'AGENT_GUARD_PROMPT_TELEMETRY': '1' if prompt_telemetry_enabled() else '0'})
-    # 앱 디렉터리 전체가 아니라 가드가 복제·검증한 바이너리 하나만 읽게 한다.
+    # Only the single binary that the guard cloned and verified is readable, not the whole app directory.
     staged = stage_autoclaw_binary()
     stage('staged')
     reads = [staged, ROOT / 'agent_guard.py', ROOT / 'zcode_hook.py', base_config,
@@ -1463,7 +1481,8 @@ def run_autoclaw_backend(remaining):
                                   loopback_port=True, github=True, read_only_workspace_paths=ZCODE_WORKSPACE_CONFIG_PATHS,
                                   short_tmpdir=True, loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
         finally:
-            # 예외로 끝나도 영수증과 정리는 남긴다. AutoClaw 가 죽은 세션을 살아 있다고 보지 않게 한다.
+            # Even when it ends in an exception the receipt and the cleanup remain, so AutoClaw does not consider a dead
+            # session alive.
             discard_staged_binary(staged)
             runtime_status('autoclaw-exit.json', {'pid': os.getpid(), 'workspace_id': workspace_id, 'stage': 'supervisor-exit', 'exit_code': status})
         return status
@@ -1475,7 +1494,8 @@ def run_autoclaw_backend(remaining):
 
 def main(argv=None):
     if is_autoclaw_agent_server_call(sys.argv[1:] if argv is None else list(argv)):
-        # 런처 셸의 `sh-start` 와 `started` 사이(python3 셔틀·인터프리터 기동·argparse)에서 멈추는지 가른다.
+        # Tells apart a stall between `sh-start` of the launcher shell and `started` (python3 shuttle, interpreter
+        # startup, argparse).
         record_autoclaw_stage('python-start')
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='mode', required=True)
@@ -1530,7 +1550,7 @@ def main(argv=None):
         return 0
     if args.mode == 'restore-open-history':
         sys.path.insert(0, str(ROOT))
-        from restore_history import registered_workspaces, restore_registered_workspace
+        from adapters.restore_history import registered_workspaces, restore_registered_workspace
         total = 0
         count = 0
         for work in registered_workspaces():
@@ -1541,7 +1561,7 @@ def main(argv=None):
         return 0
     if args.mode == 'restore-history':
         sys.path.insert(0, str(ROOT))
-        from restore_history import restore_registered_workspace
+        from adapters.restore_history import restore_registered_workspace
         print(json.dumps(restore_registered_workspace(workspace_path(args.workspace))))
         return 0
     if args.mode == 'setup-github-token':
@@ -1549,7 +1569,7 @@ def main(argv=None):
     if args.mode == 'doctor':
         return doctor()
     if args.mode == 'verify-updates':
-        return subprocess.call(['/usr/bin/python3', '-I', str(ROOT / 'compatibility_check.py')],
+        return subprocess.call(['/usr/bin/python3', '-I', str(ROOT / 'adapters/compatibility_check.py')],
                                env={'HOME': str(OWNER_HOME), 'PATH': '/usr/bin:/bin', 'DEVELOPER_DIR': '/Library/Developer/CommandLineTools'})
     if args.mode == 'opencode-review':
         prompt = sys.stdin.read()
@@ -1569,12 +1589,12 @@ def main(argv=None):
             from riskgate_bridge import riskgate_decision
             verdict = riskgate_decision({'tool_input': {'command': command}, 'cwd': str(workspace)})
         except Exception:
-            raise GuardError('riskgate 검증에 실패하여 셸 실행을 차단했습니다.') from None
+            raise GuardError('riskgate verification failed, so the shell execution was blocked.') from None
         if verdict == 'deny':
-            raise GuardError('riskgate 정책이 이 명령을 차단했습니다.')
+            raise GuardError('The riskgate policy blocked this command.')
         if verdict not in ('allow', 'ask'):
-            # 알 수 없는 판정은 닫힌다. 'deny' 문자열만 막으면 None·오류 객체가 그대로 실행됐다.
-            raise GuardError('riskgate 판정을 해석할 수 없어 셸 실행을 차단했습니다.')
+            # An unknown verdict closes. Blocking only the string 'deny' let None and error objects run as they were.
+            raise GuardError('The riskgate verdict could not be interpreted, so the shell execution was blocked.')
         return run_confined('zcode-shell', workspace,
                             ['/bin/bash', '--noprofile', '--norc', '-c', command], ephemeral=True,
                             domains=development['packageDomains'], dev_ports=development['devPorts'],
@@ -1583,14 +1603,14 @@ def main(argv=None):
     if remaining[:1] == ['--']:
         remaining = remaining[1:]
     if args.mode == 'usage':
-        # 호스트 전용 모듈. 샌드박스 안의 훅이 agent_guard 를 import 하므로 여기서만 읽는다.
+        # Host-only module. The hook inside the sandbox imports agent_guard, so it is read only here.
         sys.path.insert(0, str(ROOT))
-        import usage_cli
+        from adapters import usage_cli
         return usage_cli.run_usage(remaining)
     if args.mode == 'kimi':
-        # 호스트 전용 모듈. 최상단 import 는 샌드박스 훅을 전부 deny 로 만든다(HANDOFF 13).
+        # Host-only module. A top-level import would make every sandbox hook deny (HANDOFF 13).
         sys.path.insert(0, str(ROOT))
-        import kimi_cli
+        from adapters import kimi_cli
         return kimi_cli.run_kimi(remaining)
     if args.mode == 'exec':
         if not remaining:
@@ -1607,12 +1627,12 @@ def main(argv=None):
         auth_file = ROOT / 'state/opencode-auth.json'
         if not auth_file.is_file():
             raise GuardError('Selected OpenCode credentials have not been imported yet.')
-        # 옵트인 packet-ask 중계. 감독자가 자식 대신 GLM 리뷰를 실행해 준다.
+        # Opt-in packet-ask relay. The supervisor runs the GLM review on behalf of the child.
         relay_settings = packet_relay_settings()
         relay = None
         if relay_settings is not None:
             sys.path.insert(0, str(ROOT))
-            from packet_relay import PacketRelay
+            from adapters.packet_relay import PacketRelay
             relay = PacketRelay(workspace, persistent_home('opencode', workspace), settings=relay_settings)
         publish = pub_publish_grant(workspace)
         publish_creds = [('dart/pub-credentials.json', PUB_CREDENTIALS)] if publish is not None else []
@@ -1620,10 +1640,11 @@ def main(argv=None):
             link_opencode_auth(home, auth_file)
             if relay is not None:
                 relay.prepare(home, env)
-        publish_notice = ('## pub.dev 게시\n\n이 워크스페이스는 `dart pub publish` 가 허용돼 있다. 자격 증명은 '
-                          '`$XDG_CONFIG_HOME/dart/pub-credentials.json` 에 있고 pub 이 알아서 읽는다. '
-                          '`dart pub login` 은 브라우저가 필요해 여기서는 안 되니 시도하지 마라. '
-                          '게시 전 `dart pub publish --dry-run` 으로 검증하고, 실제 게시는 사용자가 지시했을 때만 한다.\n'
+        publish_notice = ('## pub.dev publishing\n\nThis workspace is allowed to run `dart pub publish`. The credentials '
+                          'are in `$XDG_CONFIG_HOME/dart/pub-credentials.json` and pub reads them on its own. '
+                          '`dart pub login` needs a browser and cannot be done here, so do not try it. '
+                          'Verify with `dart pub publish --dry-run` before publishing, and publish for real only when the '
+                          'user has instructed it.\n'
                           if publish is not None else '')
         def launch(extra, plugins):
             locked = ['.local/share/opencode/auth.json'] + (relay.read_only_home_paths() if relay else [])
@@ -1646,7 +1667,7 @@ def main(argv=None):
         # Orca's port, token and launch token stay out of the sandbox; the child
         # is given this broker instead, and the broker rewrites the identity.
         sys.path.insert(0, str(ROOT))
-        from orca_broker import StatusBroker
+        from adapters.orca_broker import StatusBroker
         with StatusBroker(coordinates) as broker:
             if relay is None:
                 return launch(dict(broker.child_environment(),
@@ -1670,7 +1691,7 @@ def main(argv=None):
         relay = None
         if relay_settings is not None:
             sys.path.insert(0, str(ROOT))
-            from packet_relay import PacketRelay
+            from adapters.packet_relay import PacketRelay
             relay = PacketRelay(workspace, persistent_home('zcode', workspace), settings=relay_settings)
         def prepare_zcode(home, env):
             private_dir(private_dir(home / '.zcode') / 'cli')

@@ -33,4 +33,4 @@ def riskgate_decision(payload):
             out.write(json.dumps(record, ensure_ascii=False) + '\n')
         return verdict
     except Exception:
-        raise GuardError('riskgate 검증에 실패했습니다. 정책을 확인한 뒤 다시 실행하세요.') from None
+        raise GuardError('riskgate verification failed. Check the policy and run it again.') from None

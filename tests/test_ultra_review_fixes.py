@@ -1,4 +1,4 @@
-"""2026-09-10 네 트랙 리뷰의 CRITICAL 2건·HIGH 7건 회귀. pub.dev 하드링크 쓰기 허용은 보류(설계)."""
+"""Regression for 2 CRITICAL and 7 HIGH findings from the 2026-09-10 four-track review. Allowing pub.dev hard-link writes is deferred (by design)."""
 import base64
 import json
 import os
@@ -13,12 +13,12 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import agent_guard as g
-import packet_relay
-import packet_promote
+from adapters import packet_relay
+from adapters import packet_promote
 
 
 class SafeWriteTests(unittest.TestCase):
-    """감독자가 자식 소유 트리에 쓸 때 링크를 따라가면 안 된다."""
+    """When the supervisor writes into a child-owned tree it must not follow links."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='safewrite-', dir=Path.home())
@@ -69,7 +69,7 @@ class SafeWriteTests(unittest.TestCase):
         relay = packet_relay.PacketRelay(self.base, self.home, runner=lambda *a: (0, 'REVIEW', ''))
         relay.prepare(self.home, {'PATH': ''})
         requests = self.home / 'tmp/packet-requests'
-        os.symlink(str(self.outside), str(requests / 'r1.result.md.tmp'))  # 자식이 심은 링크
+        os.symlink(str(self.outside), str(requests / 'r1.result.md.tmp'))  # A link planted by the child.
         relay._write(requests / 'r1.result.md', 'REVIEW')
         self.assertEqual(self.outside.read_text(), 'KEEP')
         self.assertEqual((requests / 'r1.result.md').read_text(), 'REVIEW')

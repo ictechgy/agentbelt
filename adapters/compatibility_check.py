@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 APP = Path('/Applications/ZCode.app')
 OPENCODE = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.opencode/bin/opencode'
 AUTOCLAW_APP = Path('/Applications/AutoClaw.app')
@@ -18,7 +18,7 @@ KIMI = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.kimi-code/bin/kimi'
 
 
 def guard_paths():
-    """agent_guard 가 해석한 실행 파일 경로(config.json 재정의 포함). 호스트 전용이라 지연 import 한다."""
+    """The executable paths as resolved by agent_guard (config.json overrides included). Imported lazily because it is host only."""
     sys.path.insert(0, str(ROOT))
     import agent_guard
     return agent_guard
@@ -49,10 +49,10 @@ def asar_text(path):
 
 
 def autoclaw_candidate(app=AUTOCLAW_APP):
-    """설치돼 있으면 AutoClaw 앱 버전과 번들 Zcode CLI 의 버전·해시. 없으면 None(선택 설치).
+    """If it is installed, the AutoClaw app version and the version and hash of the bundled Zcode CLI. None if it is not (optional install).
 
-    해시는 가드가 실제로 실행하는 고정 경로(darwin-arm64/zcode)에서 구한다. 매니페스트가 다른 파일을
-    가리키면 검토 대상이 아니므로 거부한다.
+    The hash is taken from the fixed path the guard actually executes (darwin-arm64/zcode). If the
+    manifest points at a different file, that file is not what was reviewed, so it is refused.
     """
     app = Path(app)
     if not (app / 'Contents/Info.plist').is_file():
@@ -67,20 +67,20 @@ def autoclaw_candidate(app=AUTOCLAW_APP):
 
 
 def kimi_candidate(binary=None):
-    """설치돼 있으면 Kimi Code 의 버전·해시. 없으면 None(선택 설치).
+    """If it is installed, the version and hash of Kimi Code. None if it is not (optional install).
 
-    버전 프로브는 임시 HOME 과 텔레메트리·자동 갱신 끔으로 돈다. `--version` 은 내장 빌드 정보만 찍고 끝난다.
+    The version probe runs with a temporary HOME and with telemetry and auto-update turned off. `--version` only prints the built-in build information and exits.
     """
     binary = Path(binary) if binary is not None else guard_paths().KIMI
     if not binary.is_file():
         return None
-    # 아직 검토되지 않은 후보를 호스트에서 그대로 실행하면 그 바이너리가 검사 전에 클립보드·호스트 파일을 읽을 수 있다
-    # (리뷰 HIGH). 프로브도 가드 정책 안에서 돌린다: 네트워크 없음, 읽기는 바이너리 한 파일, stdout 만 받는다.
+    # Running a not-yet-reviewed candidate on the host as is would let that binary read the clipboard and host files before it is
+    # checked (review HIGH). The probe also runs inside the guard policy: no network, the one binary file as the only read, stdout only.
     sys.path.insert(0, str(ROOT))
     import agent_guard
     with tempfile.TemporaryDirectory(prefix='guard-kimi-version-', dir=Path.home()) as work, tempfile.TemporaryFile() as out:
         status = agent_guard.run_confined('kimi-probe', Path(work), [str(binary), '--version'], domains=[], ephemeral=True,
-                                          # stderr 가 샌드박스 밖 파일이면 Node 가 fstat EPERM 으로 abort 한다(REPAIRS 2026-09-16). /dev/null 로 고정.
+                                          # If stderr is a file outside the sandbox, Node aborts with fstat EPERM (REPAIRS 2026-09-16). Pinned to /dev/null.
                                           extra_reads=[binary], stdout=out, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                           extra_env={'KIMI_DISABLE_TELEMETRY': '1', 'KIMI_CODE_NO_AUTO_UPDATE': '1',
                                                      'KIMI_CLI_NO_AUTO_UPDATE': '1'})
@@ -92,7 +92,7 @@ def kimi_candidate(binary=None):
 
 
 def merged_baseline(current, saved):
-    """새 후보 위에 저장된 선택 항목(autoclaw)을 보존한다. 앱이 잠시 없다고 기준선을 지우면 재설치가 아무 해시나 축복한다."""
+    """Preserve the saved optional entries (autoclaw) on top of the new candidate. If the baseline were cleared just because the app is momentarily absent, a reinstall would bless any hash."""
     merged = dict(current)
     for optional in ('autoclaw', 'kimi'):
         if optional not in merged and optional in (saved or {}):
@@ -140,7 +140,7 @@ def main():
         raise ValueError('An application changed during verification; baseline unchanged')
     # Reuse staged publication and failure restoration for the two non-secret profiles.
     sys.path.insert(0, str(ROOT))
-    from configure_existing import publish_settings
+    from adapters.configure_existing import publish_settings
     profile_path = ROOT / 'state/zcode-profile.json'
     profile = json.loads(profile_path.read_text())
     profile['reviewedDesktopVersion'] = before['zcode']['version']

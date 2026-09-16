@@ -15,8 +15,8 @@ def module(name, file):
     result = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(result)
     return result
-config = module('repair_config', 'configure_existing.py')
-installer = module('repair_installer', 'install_profiles.py')
+config = module('repair_config', 'adapters/configure_existing.py')
+installer = module('repair_installer', 'adapters/install_profiles.py')
 
 class RepairTests(unittest.TestCase):
     def test_unreviewed_https_override_is_rejected(self):

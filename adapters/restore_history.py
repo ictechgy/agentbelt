@@ -9,7 +9,7 @@ import sqlite3
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 TABLES = ('session', 'message', 'part', 'todo', 'session_entry', 'input_history',
           'session_target', 'model_usage', 'turn_usage', 'tool_usage', 'session_input')
 
@@ -104,8 +104,8 @@ def restore_registered_workspace(workspace):
     with tempfile.TemporaryFile() as incoming, tempfile.TemporaryFile() as outgoing:
         incoming.write(json.dumps(snapshot, ensure_ascii=False).encode()); incoming.seek(0)
         status = run_confined('zcode', workspace,
-            ['/Library/Developer/CommandLineTools/usr/bin/python3', '-I', str(ROOT / 'restore_history.py'), '--apply-snapshot', str(destination)],
-            extra_reads=[ROOT / 'restore_history.py'], read_only_home_paths=['.zcode/cli/config.json'],
+            ['/Library/Developer/CommandLineTools/usr/bin/python3', '-I', str(ROOT / 'adapters/restore_history.py'), '--apply-snapshot', str(destination)],
+            extra_reads=[ROOT / 'adapters/restore_history.py'], read_only_home_paths=['.zcode/cli/config.json'],
             stdin=incoming, stdout=outgoing)
         if status: raise ValueError('History writer failed inside the sandbox; original store unchanged.')
         outgoing.seek(0)

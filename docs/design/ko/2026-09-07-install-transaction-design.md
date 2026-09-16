@@ -60,7 +60,7 @@ LLM은 이 경로 어디에도 없다.
   "manager": "npm",
   "artifacts": [{"name": "lodash", "version": "4.17.21", "registry": "registry.npmjs.org", "integrity": "sha512-..."}],
   "scripts": "disabled",
-  "workspace": "/Users/jinhongan/projects/x",
+  "workspace": "/Users/<you>/projects/x",
   "lockfileSource": "session-start snapshot",
   "domains": ["registry.npmjs.org:443"],
   "expiresAt": "<승인 후 10분>"

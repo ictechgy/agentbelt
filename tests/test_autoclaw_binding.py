@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import bind_autoclaw_workspace as binder
 
-SESSION = 'agent:auto-coder:discord:channel:1548737346780921939'
+SESSION = 'agent:auto-coder:discord:channel:100000000000000001'
 
 
 class BindingFileTests(unittest.TestCase):
@@ -76,8 +76,8 @@ class BindingFileTests(unittest.TestCase):
                 self.assertEqual(victim.read_text(), '{}')
 
     def test_discord_channel_session_key_shape(self):
-        self.assertEqual(binder.discord_channel_session_key('auto-coder', '1548737346780921939'), SESSION)
-        for bad in [('auto-coder', 'general'), ('auto coder', '1548737346780921939'), ('', '1548737346780921939')]:
+        self.assertEqual(binder.discord_channel_session_key('auto-coder', '100000000000000001'), SESSION)
+        for bad in [('auto-coder', 'general'), ('auto coder', '100000000000000001'), ('', '100000000000000001')]:
             with self.assertRaises(RuntimeError, msg=bad):
                 binder.discord_channel_session_key(*bad)
 

@@ -21,9 +21,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
-import agent_guard
+import agentbelt
 
-OPENCLAW_STATE = agent_guard.OWNER_HOME / '.openclaw-autoclaw'
+OPENCLAW_STATE = agentbelt.OWNER_HOME / '.openclaw-autoclaw'
 SCHEMA_VERSION = 1
 AGENT_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 SNOWFLAKE = re.compile(r'^[0-9]{17,20}$')
@@ -72,7 +72,7 @@ def existing_binding(path):
 
 def build_binding(session_key, workspace, previous=None):
     """Build the binding document from the validated workspace. On a rebind, raise revision and keep boundAt."""
-    real = str(agent_guard.workspace_path(str(workspace)))
+    real = str(agentbelt.workspace_path(str(workspace)))
     info = os.stat(real)
     now = int(time.time() * 1000)
     bound_at = previous.get('boundAt') if isinstance(previous, dict) and isinstance(previous.get('boundAt'), int) else now
@@ -124,5 +124,5 @@ def main(argv=None):
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except (RuntimeError, agent_guard.GuardError) as error:
+    except (RuntimeError, agentbelt.GuardError) as error:
         raise SystemExit('bind_autoclaw_workspace: ' + str(error))

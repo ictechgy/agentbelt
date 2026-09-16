@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 import riskgate_bridge as bridge
 import zcode_hook as hook
 
@@ -76,10 +76,10 @@ class ReviewFixTests(unittest.TestCase):
             base = Path(tmp)
             # Execute the production Dock function against a private preference domain.
             source = (ROOT / 'ZcodeSafe.swift').read_text().split('final class SafeDelegate:')[0]
-            source = source.replace('"com.apple.dock"', '"local.agentguard.test.' + base.name + '"')
+            source = source.replace('"com.apple.dock"', '"local.agentbelt.test.' + base.name + '"')
             source = source.replace('let dockBackupPath = guardRoot + "/state/backups/dock-before-safe.plist"', 'let dockBackupPath = "' + str(base / 'backups/dock.plist') + '"')
             source += r'''
-let domain = "local.agentguard.test.DOMAIN" as CFString
+let domain = "local.agentbelt.test.DOMAIN" as CFString
 let key = "persistent-apps" as CFString
 let fixture: [[String: Any]] = [["tile-type": "fixture"]]
 let backup = URL(fileURLWithPath: "BACKUP_PATH")

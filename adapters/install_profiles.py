@@ -27,7 +27,7 @@ def main():
                   'events': {'PreToolUse': [hook_declaration()]}},
     }
     app = HOME / 'Applications/Zcode Safe.app'
-    launcher = '#!/bin/sh\nexec /usr/bin/python3 -I ' + shlex.quote(str(ROOT / 'agent_guard.py'))
+    launcher = '#!/bin/sh\nexec /usr/bin/python3 -I ' + shlex.quote(str(ROOT / 'agentbelt.py'))
     profile = {'domains': [], 'candidateDomains': ['api.z.ai:443'],
                'reviewedDesktopVersion': '3.11.2', 'reviewedAgentVersion': '0.16.5'}
     native = ROOT / 'native/ZcodeSafeLauncher'
@@ -35,7 +35,7 @@ def main():
     if not native.is_file() or not icon.is_file():
         raise RuntimeError('Build the native Safe launcher before installing the app.')
     plist = {'CFBundleName': 'Zcode Safe', 'CFBundleDisplayName': 'Zcode Safe',
-             'CFBundleIdentifier': 'local.agentguard.zcode.safe-launcher', 'CFBundleVersion': '3',
+             'CFBundleIdentifier': 'local.agentbelt.zcode.safe-launcher', 'CFBundleVersion': '3',
              'CFBundleShortVersionString': '1.2', 'CFBundlePackageType': 'APPL',
              'CFBundleExecutable': 'launch', 'LSUIElement': False, 'CFBundleIconFile': 'SafeIcon.icns'}
     files = {

@@ -27,9 +27,9 @@ B2는 판단을 바꾸지 않는다. 이미 사람에게 오는 그 승인을 **
               → riskgate: dangerous → ask
               → 사람이 거절하거나, 진행하려면 아래로
             에이전트: 요청 파일 작성 (평범한 워크스페이스 파일, 특권 없음)
-              .agent-guard-install-request.json
+              .agentbelt-install-request.json
 
-[호스트]    사람: agent-guard install-review
+[호스트]    사람: agentbelt install-review
               → 감독자가 요청을 읽고 (신뢰하지 않음)
               → 불변 실행 계획으로 해석 (매니저·좌표·스크립트 정책·대상)
               → 계획을 그대로 보여주고 TTY 에서 승인 받음
@@ -108,7 +108,7 @@ LLM 판단을 대체하는 것이 아니라, 사람이 승인할 대상을 **좁
 
 ## 승인 트랜잭션
 
-- `agent-guard install-review` 는 TTY 를 요구한다. 없으면 거부한다. `packet_setup_key` 가 쓰는 것과 같은 방식이다.
+- `agentbelt install-review` 는 TTY 를 요구한다. 없으면 거부한다. `packet_setup_key` 가 쓰는 것과 같은 방식이다.
 - 사람이 보는 것은 요청 파일이 아니라 **감독자가 만든 계획**이다. 제어문자는 이스케이프해서 표시한다.
 - 승인은 `operationId` 에 묶이고 10분 후 만료된다.
 - 상태 전이는 원자적이다. `pending → executing` 이 성공한 호출만 실행한다. 동시 상환은 하나만 성공한다.
@@ -119,7 +119,7 @@ LLM 판단을 대체하는 것이 아니라, 사람이 승인할 대상을 **좁
 
 `zcode_hook.py` 는 설치 명령이 `dangerous` 로 거절될 때 안내 문구를 반환한다. 이미 있는 `permissionDecisionReason` 경로를 쓴다.
 
-> 설치는 샌드박스 밖에서 사람이 승인해야 합니다. `.agent-guard-install-request.json` 에 요청을 남기고, 터미널에서 `agent-guard install-review` 를 실행하세요.
+> 설치는 샌드박스 밖에서 사람이 승인해야 합니다. `.agentbelt-install-request.json` 에 요청을 남기고, 터미널에서 `agentbelt install-review` 를 실행하세요.
 
 에이전트는 요청 파일을 쓸 수 있을 뿐이고 그 파일에는 아무 권한이 없다.
 

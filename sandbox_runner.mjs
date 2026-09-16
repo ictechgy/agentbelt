@@ -20,7 +20,7 @@ async function main() {
   try {
     diagnosticPhase = 'sandbox-profile';
     const wrapped = await SandboxManager.wrapWithSandbox(command.map(quote).join(' '), '/bin/bash', undefined, undefined,
-                                                        {commandId: 'agent-guard'});
+                                                        {commandId: 'agentbelt'});
     // SRT 0.0.75 returns a shell-quoted argv. Parse it without evaluating a host shell.
     const parsed = spawnSync('/usr/bin/python3', ['-I', '-c',
       'import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))'],
@@ -31,7 +31,7 @@ async function main() {
     if (argv[0] !== 'env' || index < 1 || argv[index + 1] !== '-p' || !argv[index + 2].startsWith('(version 1)')) {
       throw new Error('unexpected sandbox invocation');
     }
-    if (process.env.AGENT_GUARD_BOOTSTRAP === 'zcode') {
+    if (process.env.AGENTBELT_BOOTSTRAP === 'zcode') {
       diagnosticPhase = 'zcode-config-write';
       // Trusted supervisor writes the runtime config BEFORE entering Seatbelt.
       // The child policy denies writes/renames to this file and its ancestors.
@@ -56,7 +56,7 @@ async function main() {
       }
       // A session where the supervisor opened a broker port (the AutoClaw model broker) must not send loopback through the proxy.
       // The proxy only knows the domain allow list, and Seatbelt allows a direct connection to that one port only.
-      const loopbackBypass = Number(process.env.AGENT_GUARD_BROKER_PORT || 0) ? '127.0.0.1,localhost' : '';
+      const loopbackBypass = Number(process.env.AGENTBELT_BROKER_PORT || 0) ? '127.0.0.1,localhost' : '';
       config.network = {...config.network, httpProxy: generatedEnv.HTTPS_PROXY, noProxy: loopbackBypass,
                         caCertFile: '/private/etc/ssl/cert.pem'};
       config.storage = {dir: path.join(home, '.zcode'),
@@ -102,7 +102,7 @@ async function main() {
     const moduleRoot = path.dirname(fileURLToPath(import.meta.url));
     argv[index + 2] += '\n(allow file-read-data file-read-metadata (literal ' + JSON.stringify(moduleRoot) + '))\n';
     diagnosticPhase = 'terminal-capabilities';
-    const terminals = JSON.parse(process.env.AGENT_GUARD_TTY_PATHS || '[]');
+    const terminals = JSON.parse(process.env.AGENTBELT_TTY_PATHS || '[]');
     if (!Array.isArray(terminals)) throw new Error('invalid terminal capability');
     const inheritedDevices = new Set([0, 1, 2].flatMap(fd => {
       try { const info = fs.fstatSync(fd); return info.isCharacterDevice() ? [info.rdev] : []; }
@@ -132,7 +132,7 @@ async function main() {
     // integrity checks and its *.keystore name trips the secret deny. denyWrite
     // beats allowWrite in the policy, so this is appended AFTER the SRT profile
     // where SBPL's last matching rule wins; every other *.keystore stays denied.
-    const keystoreRoot = process.env.AGENT_GUARD_GRADLE_KEYSTORE_ROOT;
+    const keystoreRoot = process.env.AGENTBELT_GRADLE_KEYSTORE_ROOT;
     if (keystoreRoot) {
       if (!path.isAbsolute(keystoreRoot) || fs.realpathSync(keystoreRoot) !== keystoreRoot) {
         throw new Error('invalid gradle keystore root');
@@ -155,14 +155,14 @@ async function main() {
     // A supervisor-owned loopback port for status relay. The child may reach
     // this single address; every other local service stays denied, and the
     // supervisor is what actually holds the destination's credentials.
-    const brokerPort = Number(process.env.AGENT_GUARD_BROKER_PORT || 0);
+    const brokerPort = Number(process.env.AGENTBELT_BROKER_PORT || 0);
     if (brokerPort) {
       if (!Number.isInteger(brokerPort) || brokerPort < 1024 || brokerPort > 65535) {
         throw new Error('invalid broker port');
       }
       argv[index + 2] += '\n(allow network-outbound (remote ip "localhost:' + brokerPort + '"))\n';
     }
-    const devPorts = JSON.parse(process.env.AGENT_GUARD_DEV_PORTS || '[]');
+    const devPorts = JSON.parse(process.env.AGENTBELT_DEV_PORTS || '[]');
     if (!Array.isArray(devPorts) || devPorts.some(p => !Number.isInteger(p) || p < 1024 || p > 65535)) {
       throw new Error('invalid development ports');
     }
@@ -186,7 +186,7 @@ async function main() {
     const status = await new Promise((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', (code, signal) => {
-        if (signal) console.error('agent-guard: child terminated by ' + signal);
+        if (signal) console.error('agentbelt: child terminated by ' + signal);
         resolve(code ?? (128 + (osConstants.signals[signal] ?? 15)));
       });
     });
@@ -199,7 +199,7 @@ async function main() {
 }
 
 main().then(code => { process.exitCode = code; }).catch(error => {
-  if (process.env.AGENT_GUARD_BOOTSTRAP === 'zcode') {
+  if (process.env.AGENTBELT_BOOTSTRAP === 'zcode') {
     try {
       const directory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'state/runtime');
       fs.mkdirSync(directory, {recursive: true, mode: 0o700});
@@ -208,6 +208,6 @@ main().then(code => { process.exitCode = code; }).catch(error => {
     } catch {}
   }
   // Do not print command text, environment values or config parse contents.
-  console.error('agent-guard: sandbox initialization failed; no unrestricted fallback.');
+  console.error('agentbelt: sandbox initialization failed; no unrestricted fallback.');
   process.exitCode = 125;
 });

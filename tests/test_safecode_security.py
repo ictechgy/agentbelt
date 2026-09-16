@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as guard
+import agentbelt as guard
 
 
 class SafecodeSecurityTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class SafecodeSecurityTests(unittest.TestCase):
             os.link(outside, hidden / 'alias.txt'); hidden.chmod(0)
             try:
                 code = "from pathlib import Path;p=Path('hidden');p.chmod(0o700);(p/'alias.txt').write_text('CHANGED')"
-                result = subprocess.run(['/usr/bin/python3', '-I', str(ROOT / 'agent_guard.py'), 'exec', str(work), '--', '/usr/bin/python3', '-I', '-c', code], capture_output=True, text=True, timeout=20)
+                result = subprocess.run(['/usr/bin/python3', '-I', str(ROOT / 'agentbelt.py'), 'exec', str(work), '--', '/usr/bin/python3', '-I', '-c', code], capture_output=True, text=True, timeout=20)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(outside.read_text(), 'SYNTHETIC_ORIGINAL')
                 self.assertNotIn('Traceback', result.stderr)
@@ -70,7 +70,7 @@ print(json.dumps({'writes':results,'exit':r.returncode,'permission':json.loads(r
 '''
             runner = r'''import sys,os
 from pathlib import Path
-sys.path.insert(0,sys.argv[1]);import agent_guard as g
+sys.path.insert(0,sys.argv[1]);import agentbelt as g
 g.ROOT=Path(sys.argv[2]);g.verify_opencode_binary=lambda:None;g.load_opencode_profile=lambda:{'domains':[]}
 original=g.run_confined
 # Substitute only the untrusted child to attempt a configuration attack.

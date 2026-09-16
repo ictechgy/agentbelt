@@ -13,7 +13,7 @@ PYTHON = '/usr/bin/python3'
 class BoundaryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory(prefix='agent-guard-test-', dir=Path.home())
+        cls.temp = tempfile.TemporaryDirectory(prefix='agentbelt-test-', dir=Path.home())
         cls.base = Path(cls.temp.name)
         cls.work = cls.base / 'work'
         cls.work.mkdir()
@@ -31,7 +31,7 @@ class BoundaryTests(unittest.TestCase):
         env = dict(os.environ)
         env.update(extra_env or {})
         return subprocess.run(
-            [PYTHON, str(ROOT / 'agent_guard.py'), 'exec', str(self.work), '--', *command],
+            [PYTHON, str(ROOT / 'agentbelt.py'), 'exec', str(self.work), '--', *command],
             env=env, capture_output=True, text=True, timeout=30,
         )
 
@@ -62,8 +62,8 @@ class BoundaryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
     def test_parent_secret_environment_is_not_inherited(self):
-        result = self.run_guard('/usr/bin/printenv', 'AGENT_GUARD_SYNTHETIC_SECRET',
-                                extra_env={'AGENT_GUARD_SYNTHETIC_SECRET': 'synthetic-only'})
+        result = self.run_guard('/usr/bin/printenv', 'AGENTBELT_SYNTHETIC_SECRET',
+                                extra_env={'AGENTBELT_SYNTHETIC_SECRET': 'synthetic-only'})
         self.assertNotEqual(result.returncode, 0)
 
     def test_writes_outside_workspace_are_denied(self):

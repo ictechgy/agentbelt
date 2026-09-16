@@ -294,10 +294,10 @@ def publish_settings(updates):
 
 
 def opencode_binary():
-    """The OpenCode binary as resolved by agent_guard (config.json override included). Lazy import: host-only path."""
+    """The OpenCode binary as resolved by agentbelt (config.json override included). Lazy import: host-only path."""
     sys.path.insert(0, str(ROOT))
-    import agent_guard
-    return agent_guard.OPENCODE
+    import agentbelt
+    return agentbelt.OPENCODE
 
 
 def import_settings():

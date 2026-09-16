@@ -20,7 +20,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
-import agent_guard  # noqa: E402
+import agentbelt  # noqa: E402
 
 # Policy file for kimi mode. Change the region and the reachable domains only here.
 PROFILE_PATH = ROOT / 'state/kimi-profile.json'
@@ -59,16 +59,16 @@ def default_profile():
 def load_profile():
     """Read the policy file. If it is missing, create the default with mode 0600. If the region or the domains do not match the format, fail closed."""
     if not PROFILE_PATH.is_file():
-        agent_guard.private_dir(PROFILE_PATH.parent)
-        agent_guard.write_private_json(PROFILE_PATH, default_profile())
+        agentbelt.private_dir(PROFILE_PATH.parent)
+        agentbelt.write_private_json(PROFILE_PATH, default_profile())
     profile = json.loads(PROFILE_PATH.read_text())
     if profile.get('region') not in REGION_DOMAINS:
-        raise agent_guard.GuardError('state/kimi-profile.json region must be "global" or "mainland-cn".')
+        raise agentbelt.GuardError('state/kimi-profile.json region must be "global" or "mainland-cn".')
     domains = profile.get('domains')
     reviewed = {domain for region in REGION_DOMAINS.values() for domain in region}
     # Reject wildcards, other ports, and hosts outside the review (review LOW: `*.kimi.ai:443` would reopen the telemetry and update hosts).
     if not isinstance(domains, list) or not domains or not all(isinstance(d, str) and d in reviewed for d in domains):
-        raise agent_guard.GuardError('state/kimi-profile.json domains must be a non-empty subset of the reviewed Kimi hosts: '
+        raise agentbelt.GuardError('state/kimi-profile.json domains must be a non-empty subset of the reviewed Kimi hosts: '
                                      + ', '.join(sorted(reviewed)) + '.')
     return profile
 
@@ -81,7 +81,7 @@ def kimi_environment(home, binary=None):
     """
     return {
         'KIMI_CODE_HOME': str(Path(home) / KIMI_HOME_RELATIVE),
-        'AGENT_GUARD_KIMI_BINARY': str(binary if binary is not None else agent_guard.KIMI),
+        'AGENTBELT_KIMI_BINARY': str(binary if binary is not None else agentbelt.KIMI),
         'KIMI_DISABLE_TELEMETRY': '1',
         'KIMI_CODE_NO_AUTO_UPDATE': '1',
         'KIMI_CLI_NO_AUTO_UPDATE': '1',
@@ -101,35 +101,35 @@ def prepare_kimi_home(region, binary=None):
     empty home under `state/homes/kimi/` even without a launch (for example a wiring test). run_confined locks the region marker with denyWrite.
     """
     def prepare(home, env):
-        agent_guard.write_private_file(home, REGION_MARKER_RELATIVE, region + '\n')
+        agentbelt.write_private_file(home, REGION_MARKER_RELATIVE, region + '\n')
         env.update(kimi_environment(home, binary))
     return prepare
 
 
 def run_kimi(arguments):
-    """Entry point for `agent-guard kimi -- <kimi args>`. The current directory is the workspace."""
-    workspace = agent_guard.workspace_path(os.getcwd())
-    agent_guard.verify_kimi_binary()
+    """Entry point for `agentbelt kimi -- <kimi args>`. The current directory is the workspace."""
+    workspace = agentbelt.workspace_path(os.getcwd())
+    agentbelt.verify_kimi_binary()
     profile = load_profile()
-    development = agent_guard.development_options()
-    publish = agent_guard.pub_publish_grant(workspace)
-    publish_credentials = [('dart/pub-credentials.json', agent_guard.PUB_CREDENTIALS)] if publish is not None else []
+    development = agentbelt.development_options()
+    publish = agentbelt.pub_publish_grant(workspace)
+    publish_credentials = [('dart/pub-credentials.json', agentbelt.PUB_CREDENTIALS)] if publish is not None else []
     publish_notice = ('\n## Publishing to pub.dev\n\nThis workspace is allowed to run `dart pub publish`. Use `--dry-run` freely; '
                       'publish for real only when the user asks for it.\n' if publish is not None else '')
     domains = sorted(set(profile['domains'] + development['packageDomains']
-                         + (agent_guard.PUB_PUBLISH_DOMAINS if publish is not None else [])))
+                         + (agentbelt.PUB_PUBLISH_DOMAINS if publish is not None else [])))
     # To block a swap between verification and launch, verify a guard-owned copy and run only that. The read allowance is for the copy too.
-    staged = agent_guard.stage_kimi_binary()
+    staged = agentbelt.stage_kimi_binary()
     try:
         return launch_kimi(workspace, staged, arguments, domains, profile, development, publish_credentials,
                            KIMI_NOTICE + publish_notice)
     finally:
-        agent_guard.discard_staged_binary(staged)
+        agentbelt.discard_staged_binary(staged)
 
 
 def launch_kimi(workspace, binary, arguments, domains, profile, development, publish_credentials, notice):
     """Call run_confined with the verified copy. Split out of run_kimi so the cleanup (finally) and the wiring can be checked separately."""
-    return agent_guard.run_confined(
+    return agentbelt.run_confined(
         'kimi', workspace, [str(binary), *arguments], domains,
         extra_reads=[binary, WATCH_BOOTSTRAP],
         prepare_home=prepare_kimi_home(profile['region'], binary),
@@ -139,5 +139,5 @@ def launch_kimi(workspace, binary, arguments, domains, profile, development, pub
         notice_extra=notice,
         loopback_port=True,
         config_credentials=publish_credentials,
-        loopback_all=agent_guard.loopback_grant(workspace),
-        allow_gradle_keystore=agent_guard.gradle_keystore_grant(workspace))
+        loopback_all=agentbelt.loopback_grant(workspace),
+        allow_gradle_keystore=agentbelt.gradle_keystore_grant(workspace))

@@ -5,8 +5,8 @@ import CoreFoundation
 // Paths are derived from the account. A hard-coded user path would make installation impossible on another account.
 let homeDirectory = NSHomeDirectory()
 let userName = NSUserName()
-let guardRoot = homeDirectory + "/.local/share/agent-guard"
-let guardScript = guardRoot + "/agent_guard.py"
+let guardRoot = homeDirectory + "/.local/share/agentbelt"
+let guardScript = guardRoot + "/agentbelt.py"
 let safeAppPath = homeDirectory + "/Applications/Zcode Safe.app"
 let dockBackupPath = guardRoot + "/state/backups/dock-before-safe.plist"
 
@@ -128,7 +128,7 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
                 let count = value["sandboxed_children"] as? Int ?? 0
                 status.stringValue = count > 0 ? "Safe 실행 경로와 보호된 백엔드를 확인했습니다.\n실제 작업 창의 이름은 Zcode로 표시됩니다." : "Safe 실행 경로입니다. 프로젝트를 열면 보호 백엔드가 시작됩니다."
             } else { status.stringValue = value["gui_running"] as? Bool == true ? "일반 Zcode가 실행 중이거나 보호 경로를 확인할 수 없습니다. 작업을 저장하고 Zcode를 종료한 뒤 Safe로 여세요." : "Zcode가 종료되어 있습니다. 아래 버튼으로 보호 실행하세요." }
-        } else { status.stringValue = "상태를 확인하지 못했습니다. Terminal에서 agent-guard doctor를 실행하세요." }
+        } else { status.stringValue = "상태를 확인하지 못했습니다. Terminal에서 agentbelt doctor를 실행하세요." }
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     @objc func openZcode() {
@@ -141,7 +141,7 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
         }
         if launching { return }
         guard runGuard(["check-zcode"]).0 == 0 else {
-            status.stringValue = "설치 버전 또는 보호 설정 확인에 실패했습니다. Terminal에서 agent-guard doctor를 실행하세요."
+            status.stringValue = "설치 버전 또는 보호 설정 확인에 실패했습니다. Terminal에서 agentbelt doctor를 실행하세요."
             window.makeKeyAndOrderFront(nil); return
         }
         launching = true
@@ -164,7 +164,7 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self?.launching = false
                 guard error == nil, let app = app else {
-                    self?.status.stringValue = "Zcode를 시작하지 못했습니다. agent-guard doctor로 확인하세요."
+                    self?.status.stringValue = "Zcode를 시작하지 못했습니다. agentbelt doctor로 확인하세요."
                     self?.window.makeKeyAndOrderFront(nil); return
                 }
                 let result = runGuard(["record-zcode-launch", String(app.processIdentifier)])
@@ -188,7 +188,7 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
             let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             let count = value?["imported_sessions"] as? Int ?? 0
             DispatchQueue.main.async {
-                self?.status.stringValue = code == 0 ? "대화 \(count)개를 추가로 복원했습니다. Zcode에서 대화를 다시 선택하세요. 원본과 이미 있는 Safe 대화는 유지합니다." : "복원을 완료하지 못했습니다. 원본은 유지되었습니다. Terminal에서 agent-guard restore-history와 프로젝트 경로로 확인하세요."
+                self?.status.stringValue = code == 0 ? "대화 \(count)개를 추가로 복원했습니다. Zcode에서 대화를 다시 선택하세요. 원본과 이미 있는 Safe 대화는 유지합니다." : "복원을 완료하지 못했습니다. 원본은 유지되었습니다. Terminal에서 agentbelt restore-history와 프로젝트 경로로 확인하세요."
             }
         }
     }

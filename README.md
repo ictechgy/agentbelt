@@ -1,9 +1,9 @@
-# agent-guard
+# agentbelt
 
 Run third-party AI coding agents on macOS **confined to one project directory**, with the
 boundary enforced by the kernel (Seatbelt) and verified by tests that actually try to cross it.
 
-`agent-guard` is a supervisor. It launches an agent CLI (OpenCode, Kimi Code, the Zcode desktop
+`agentbelt` is a supervisor. It launches an agent CLI (OpenCode, Kimi Code, the Zcode desktop
 backend, AutoClaw's bundled runtime) inside `sandbox-exec` with a policy generated per launch:
 
 - **Filesystem:** read access to the workspace, a per-project isolated `HOME`, and the tool
@@ -18,7 +18,7 @@ backend, AutoClaw's bundled runtime) inside `sandbox-exec` with a policy generat
 - **Credentials:** provider keys are imported once from the host tool's own auth store, only for
   reviewed providers, into a guard-owned file that is linked into each isolated home. A repo-scoped
   GitHub token can be injected per session.
-- **Self-description:** every session starts with a generated `AGENT_GUARD_ENVIRONMENT.md` that
+- **Self-description:** every session starts with a generated `AGENTBELT_ENVIRONMENT.md` that
   tells the agent exactly what it can and cannot reach, so it does not misdiagnose the sandbox as a
   broken machine.
 
@@ -35,7 +35,7 @@ opinionated. Expect:
   [`@anthropic-ai/sandbox-runtime`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime) 0.0.75
   (Apache-2.0), pinned via `runtime/package-lock.json`.
 - Adapters are pinned to reviewed binary hashes. When OpenCode or Kimi updates itself, launches
-  are refused until `agent-guard verify-updates` re-runs the suite and records the new baseline.
+  are refused until `agentbelt verify-updates` re-runs the suite and records the new baseline.
   That is deliberate.
 - Code, comments, tests and the agent-facing session notice are English. The operator docs under
   `docs/ko/` and the original design notes under `docs/design/ko/` are Korean (English summaries in
@@ -52,30 +52,30 @@ opinionated. Expect:
 | Zcode Safe.app | Zcode desktop with a confined agent backend | Dock launcher built from `ZcodeSafe.swift` |
 | `autoclaw-backend` | AutoClaw's bundled Zcode CLI | installed by `adapters/install_autoclaw.py`; yolo mode, no host exec |
 
-Run `agent-guard doctor` to see which baselines are verified.
+Run `agentbelt doctor` to see which baselines are verified.
 
 ## Install
 
 ```sh
-git clone https://github.com/ictechgy/agent-guard
-cd agent-guard
-./install.sh              # copies code to ~/.local/share/agent-guard, pins node, npm ci, builds the launcher
-agent-guard init          # state for the agents that are installed; records their hashes (trust on first install)
-agent-guard doctor
-cd ~/.local/share/agent-guard && /usr/bin/python3 -m unittest discover -s tests
+git clone https://github.com/ictechgy/agentbelt
+cd agentbelt
+./install.sh              # copies code to ~/.local/share/agentbelt, pins node, npm ci, builds the launcher
+agentbelt init          # state for the agents that are installed; records their hashes (trust on first install)
+agentbelt doctor
+cd ~/.local/share/agentbelt && /usr/bin/python3 -m unittest discover -s tests
 ```
 
 `init` only fills in what is missing: the reviewed package-registry list, an example riskgate policy if you
 have none (`~/.config/riskgate/riskgate.yaml`), Zcode profiles when Zcode is installed, the packet-ask version
 gate when packet-ask is installed, and a hash baseline for every installed agent. Install the agents from
 trusted sources before running it; from then on a changed binary refuses to launch until
-`agent-guard verify-updates` re-runs the suite and records the new hash.
+`agentbelt verify-updates` re-runs the suite and records the new hash.
 
 Then import credentials for the providers you use (only allowlisted providers are copied, and
 only `{type, key}`):
 
 ```sh
-cd ~/.local/share/agent-guard
+cd ~/.local/share/agentbelt
 /usr/bin/python3 adapters/configure_existing.py --authorized-live-settings
 cd ~/my-project && safecode
 ```
@@ -118,7 +118,7 @@ Short versions; the tests and `docs/` carry the details.
 
 ```
 core (repository root; imported or read from inside the sandbox)
-  agent_guard.py          supervisor: policy, run_confined, mode dispatch
+  agentbelt.py          supervisor: policy, run_confined, mode dispatch
   sandbox_runner.mjs      trusted wrapper around sandbox-runtime; appends the extra SBPL rules
   environment_notice.py   per-session environment description for the agent
   zcode_hook.py           in-sandbox tool hook (riskgate policy) for Zcode

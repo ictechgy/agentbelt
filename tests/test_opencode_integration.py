@@ -75,7 +75,7 @@ class OpenCodeIntegrationTest(unittest.TestCase):
             code = '''from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[1])
-import agent_guard as g
+import agentbelt as g
 raise SystemExit(g.run_confined('opencode-test', Path(sys.argv[2]),
  ['/usr/bin/env','NO_PROXY=','no_proxy=',str(g.OPENCODE),'--print-logs','--log-level','DEBUG',
   'run','--format','json','Run the synthetic guard probe.'],
@@ -121,7 +121,7 @@ raise SystemExit(g.run_confined('opencode-test', Path(sys.argv[2]),
             # AGENTS.md in the protected config directory must reach the model as the actual system prompt.
             system_text = ''.join(str(m.get('content', '')) for r in requests
                                   for m in r.get('messages', []) if m.get('role') == 'system')
-            self.assertIn('AGENT_GUARD_ENVIRONMENT.md', system_text,
+            self.assertIn('AGENTBELT_ENVIRONMENT.md', system_text,
                           'The isolated-environment notice did not reach the model system prompt.')
 
 

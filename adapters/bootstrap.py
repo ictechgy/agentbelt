@@ -1,4 +1,4 @@
-"""`agent-guard init`: create the state a fresh installation needs, for the agents that are actually installed.
+"""`agentbelt init`: create the state a fresh installation needs, for the agents that are actually installed.
 
 Why. `install.sh` copies code and pins Node, but every mode also needs state under `<install>/state/`: the reviewed
 package-domain list, the riskgate policy used by the Zcode hook, the Zcode profiles and Safe app, the packet-ask
@@ -7,7 +7,7 @@ exist only on the original operator's machine, so a second installation had no p
 
 Trust on first install. The baseline recorded here is the hash of whatever is installed right now; it is the
 operator's job to install the agents from trusted sources first. Afterwards a changed binary refuses to launch until
-`agent-guard verify-updates` re-runs the test suite and records the new hash. `init` never overwrites an existing
+`agentbelt verify-updates` re-runs the test suite and records the new hash. `init` never overwrites an existing
 file, so re-running it after an upgrade is safe and only fills in what is missing.
 """
 import json
@@ -18,7 +18,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
-import agent_guard  # noqa: E402
+import agentbelt  # noqa: E402
 
 # Shipped example policy, installed only when the operator has none.
 EXAMPLE_RISKGATE_POLICY = ROOT / 'examples/riskgate.yaml'
@@ -26,16 +26,16 @@ EXAMPLE_RISKGATE_POLICY = ROOT / 'examples/riskgate.yaml'
 
 def default_development_options():
     """Public defaults: every reviewed package registry, no development ports, no temp-folder grants."""
-    return {'devPorts': [], 'packageDomains': sorted(agent_guard.PUBLIC_PACKAGE_DOMAINS), 'darwinTempDirectories': []}
+    return {'devPorts': [], 'packageDomains': sorted(agentbelt.PUBLIC_PACKAGE_DOMAINS), 'darwinTempDirectories': []}
 
 
 def ensure_json(path, value, created):
     """Write `value` as 0600 JSON unless `path` already exists (never overwrite operator edits)."""
     if path.is_symlink():
-        raise agent_guard.GuardError('Refusing a symlink at a state file: ' + str(path))
+        raise agentbelt.GuardError('Refusing a symlink at a state file: ' + str(path))
     if path.exists():
         return False
-    agent_guard.write_private_json(path, value)
+    agentbelt.write_private_json(path, value)
     created.append(path)
     return True
 
@@ -45,9 +45,9 @@ def ensure_riskgate(state, created):
 
     The Zcode hook refuses to run without a policy, so a missing policy closes the Zcode modes rather than opening them.
     """
-    policy = agent_guard.OWNER_HOME / '.config/riskgate/riskgate.yaml'
+    policy = agentbelt.OWNER_HOME / '.config/riskgate/riskgate.yaml'
     if policy.is_symlink():
-        raise agent_guard.GuardError('The riskgate policy path is a symlink; refusing to use it.')
+        raise agentbelt.GuardError('The riskgate policy path is a symlink; refusing to use it.')
     if not policy.is_file() and EXAMPLE_RISKGATE_POLICY.is_file():
         policy.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.copyfile(str(EXAMPLE_RISKGATE_POLICY), str(policy))
@@ -59,7 +59,7 @@ def ensure_riskgate(state, created):
 
 def packet_ask_version():
     """Version of an installed packet-ask tool from its dist-info name, or None when it is not installed."""
-    for entry in sorted(agent_guard.PACKET_VENV.glob('lib/python*/site-packages/packet_ask-*.dist-info')):
+    for entry in sorted(agentbelt.PACKET_VENV.glob('lib/python*/site-packages/packet_ask-*.dist-info')):
         version = entry.name[len('packet_ask-'):-len('.dist-info')]
         if version.count('.') == 2 and all(part.isdigit() for part in version.split('.')):
             return version
@@ -104,7 +104,7 @@ def ensure_baseline(state, created, report):
             merged[name] = saved[name]  # existing reviewed entries win; verify-updates is the only path that changes them
         if path.exists():
             path.unlink()
-        agent_guard.write_private_json(path, merged)
+        agentbelt.write_private_json(path, merged)
         created.append(path)
         report.append('baseline: recorded ' + ', '.join(added) + ' (trust on first install; verify-updates re-checks later)')
     else:
@@ -112,8 +112,8 @@ def ensure_baseline(state, created, report):
 
 
 def initialize():
-    """Entry point of `agent-guard init`. Prints what was created and what each agent still needs."""
-    state = agent_guard.private_dir(ROOT / 'state')
+    """Entry point of `agentbelt init`. Prints what was created and what each agent still needs."""
+    state = agentbelt.private_dir(ROOT / 'state')
     created, report = [], []
     if ensure_json(state / 'development.json', default_development_options(), created):
         report.append('development.json: reviewed package registries enabled, no ports, no temp grants')
@@ -130,5 +130,5 @@ def initialize():
     for line in report:
         print(line)
     print('created:', ', '.join(str(path) for path in created) if created else '(nothing; already initialized)')
-    print('next: agent-guard doctor; then adapters/configure_existing.py --authorized-live-settings for OpenCode, or cd <project> && safekimi')
+    print('next: agentbelt doctor; then adapters/configure_existing.py --authorized-live-settings for OpenCode, or cd <project> && safekimi')
     return 0

@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 
 
 def confined(work, script, **options):
@@ -67,14 +67,14 @@ class DarwinTempDirectoryTests(unittest.TestCase):
         from unittest.mock import patch
         base = os.path.dirname(g.darwin_temporary_items())
         import shutil
-        names = ['agent-guard-test-' + os.urandom(3).hex() + suffix for suffix in ('-index', '-cache')]
+        names = ['agentbelt-test-' + os.urandom(3).hex() + suffix for suffix in ('-index', '-cache')]
         options = dict(g.development_options(), darwinTempDirectories=names)
         try:
             with patch.object(g, 'development_options', lambda: options), \
                  tempfile.TemporaryDirectory(prefix='temp-grant-', dir=Path.home()) as tmp:
                 status, text = confined(Path(tmp),
                     'd="' + base + '/' + names[0] + '/probe-$$"; mkdir -p "$d" && echo hi > "$d/f" && cat "$d/f" && rm -r "$d" && echo GRANT_RW_OK\n'
-                    'mkdir "' + base + '/agent-guard-sibling-$$" 2>/dev/null && echo SIBLING_OPEN || echo SIBLING_BLOCKED\n'
+                    'mkdir "' + base + '/agentbelt-sibling-$$" 2>/dev/null && echo SIBLING_OPEN || echo SIBLING_BLOCKED\n'
                     'ls "' + base + '" >/dev/null 2>&1 && echo LIST_OPEN || echo LIST_BLOCKED\n')
         finally:
             for name in names:
@@ -92,7 +92,7 @@ class SandboxTests(unittest.TestCase):
             (work / 't.swift').write_text('import Foundation\nprint(1)\n'
                                           'try! Data("{}".utf8).write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "/atomic.json"), options: .atomic)\n'
                                           'print("ATOMIC_OK")\n')
-            planted = Path(g.darwin_temporary_items()) / ('agent-guard-planted-canary-' + str(os.getpid()) + '.txt')  # unique per run: parallel suites share T/
+            planted = Path(g.darwin_temporary_items()) / ('agentbelt-planted-canary-' + str(os.getpid()) + '.txt')  # unique per run: parallel suites share T/
             planted.parent.mkdir(parents=True, exist_ok=True)
             planted.write_text('CANARY_TEMP_ITEM')
             try:

@@ -19,7 +19,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
-import agent_guard  # noqa: E402
+import agentbelt  # noqa: E402
 
 # Policy file for usage mode. Change the domains, the CLI version, and the console site/region only here.
 PROFILE_PATH = ROOT / 'state/usage-profile.json'
@@ -48,24 +48,24 @@ def default_profile():
 def load_profile():
     """Read the policy file. If it is missing, create the default with mode 0600."""
     if not PROFILE_PATH.is_file():
-        agent_guard.private_dir(PROFILE_PATH.parent)
-        agent_guard.write_private_json(PROFILE_PATH, default_profile())
+        agentbelt.private_dir(PROFILE_PATH.parent)
+        agentbelt.write_private_json(PROFILE_PATH, default_profile())
     profile = json.loads(PROFILE_PATH.read_text())
     if not isinstance(profile.get('domains'), list) or not profile['domains']:
-        raise agent_guard.GuardError('state/usage-profile.json needs a non-empty domains list.')
+        raise agentbelt.GuardError('state/usage-profile.json needs a non-empty domains list.')
     return profile
 
 
 def usage_workspace():
     """Guard-owned empty workspace. A user project is never used."""
-    return agent_guard.private_dir(agent_guard.private_dir(ROOT / 'state') / 'usage-workspace')
+    return agentbelt.private_dir(agentbelt.private_dir(ROOT / 'state') / 'usage-workspace')
 
 
 def usage_home():
     """The same path as the persistent isolated home run_confined uses for mode='usage'."""
     identity = hashlib.sha256(str(usage_workspace()).encode()).hexdigest()[:20]
     state = ROOT / 'state'
-    return agent_guard.private_dir(agent_guard.private_dir(agent_guard.private_dir(state / 'homes') / 'usage') / identity)
+    return agentbelt.private_dir(agentbelt.private_dir(agentbelt.private_dir(state / 'homes') / 'usage') / identity)
 
 
 def bl_entry(home):
@@ -77,7 +77,7 @@ def install_command(profile):
     """Shell command that installs the pinned version of bailian-cli into the isolated home prefix."""
     version = profile['cliVersion']
     if not all(part.isdigit() for part in version.split('.')):
-        raise agent_guard.GuardError('usage-profile cliVersion must be a plain semantic version.')
+        raise agentbelt.GuardError('usage-profile cliVersion must be a plain semantic version.')
     return ['/bin/bash', '--noprofile', '--norc', '-c',
             'mkdir -p "$HOME/' + CLI_PREFIX + '" && npm install --prefix "$HOME/' + CLI_PREFIX
             + '" --no-audit --no-fund --loglevel=error bailian-cli@' + version]
@@ -87,10 +87,10 @@ def query_command(home, profile, extra):
     """The bl command to run inside the sandbox. With no arguments it is the Token Plan summary."""
     entry = bl_entry(home)
     if not entry.is_file():
-        raise agent_guard.GuardError('bl is not installed in the isolated home yet; run agent-guard usage setup first.')
+        raise agentbelt.GuardError('bl is not installed in the isolated home yet; run agentbelt usage setup first.')
     if extra:
-        return [str(agent_guard.NODE), str(entry), *extra]
-    return [str(agent_guard.NODE), str(entry), 'usage', 'token-plan',
+        return [str(agentbelt.NODE), str(entry), *extra]
+    return [str(agentbelt.NODE), str(entry), 'usage', 'token-plan',
             '--console-site', profile['consoleSite'], '--console-region', profile['consoleRegion']]
 
 
@@ -111,7 +111,7 @@ def host_time_zone():
 def run_sandboxed(command, domains):
     """Run bl inside Seatbelt with the guard-owned workspace and the persistent isolated home."""
     # On every run bl prints two lines of the Node experimental feature warning (UNDICI-EHPA) that hide the result.
-    status = agent_guard.run_confined('usage', usage_workspace(), command, sorted(set(domains)),
+    status = agentbelt.run_confined('usage', usage_workspace(), command, sorted(set(domains)),
                                       extra_env={'TZ': host_time_zone(), 'NODE_OPTIONS': '--no-warnings'})
     if status == 3:
         # Exit code 3 from bl means an authentication problem. The guidance of bl (`bl auth login --console`) stores into the
@@ -129,28 +129,28 @@ def login_on_host(home):
     """
     entry = bl_entry(home)
     if not entry.is_file():
-        raise agent_guard.GuardError('bl is not installed in the isolated home yet; run agent-guard usage setup first.')
+        raise agentbelt.GuardError('bl is not installed in the isolated home yet; run agentbelt usage setup first.')
     profile = load_profile()
     env = {
         'HOME': str(home), 'BAILIAN_CONFIG_DIR': str(home / '.bailian'),
-        'PATH': ':'.join([str(agent_guard.NODE.parent), '/usr/bin', '/bin']),
-        'TMPDIR': str(agent_guard.private_dir(home / 'tmp')),
+        'PATH': ':'.join([str(agentbelt.NODE.parent), '/usr/bin', '/bin']),
+        'TMPDIR': str(agentbelt.private_dir(home / 'tmp')),
         'DO_NOT_TRACK': '1', 'LANG': 'en_US.UTF-8', 'TERM': os.environ.get('TERM', 'xterm-256color'),
     }
     print('Console login opens your browser once; the token is stored only in the isolated home.', file=sys.stderr)
-    return subprocess.call([str(agent_guard.NODE), str(entry), 'auth', 'login', '--console',
+    return subprocess.call([str(agentbelt.NODE), str(entry), 'auth', 'login', '--console',
                             '--console-site', profile['consoleSite']], env=env, cwd=str(home))
 
 
 def run_usage(arguments):
-    """Entry point for `agent-guard usage [setup|login|-- <bl args>]`."""
+    """Entry point for `agentbelt usage [setup|login|-- <bl args>]`."""
     profile = load_profile()
     home = usage_home()
     if arguments == ['setup']:
-        development = agent_guard.development_options()
+        development = agentbelt.development_options()
         status = run_sandboxed(install_command(profile), profile['domains'] + development['packageDomains'])
         if status != 0:
-            raise agent_guard.GuardError('bailian-cli install failed inside the isolated home; see npm output above.')
+            raise agentbelt.GuardError('bailian-cli install failed inside the isolated home; see npm output above.')
         return login_on_host(home)
     if arguments == ['login']:
         return login_on_host(home)

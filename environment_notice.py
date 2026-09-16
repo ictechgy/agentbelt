@@ -9,7 +9,7 @@ Never put token values in it.
 from pathlib import Path
 
 # Name of the description file the agent can read directly inside the isolated home.
-NOTICE_FILE_NAME = 'AGENT_GUARD_ENVIRONMENT.md'
+NOTICE_FILE_NAME = 'AGENTBELT_ENVIRONMENT.md'
 
 
 def _bullet_lines(values):
@@ -61,7 +61,7 @@ def _external_review_line(env):
 
     When both notices were present the agent followed the earlier one (handing it to the user). Keep only one.
     """
-    if env.get('AGENT_GUARD_PACKET_REVIEW') == '1':
+    if env.get('AGENTBELT_PACKET_REVIEW') == '1':
         return ('- Delegate external model review to the supervisor with the `packet-review` command below. Do not build packet files\n'
                 '  yourself and do not ask the user to run them on the host. Dropping files into `tmp/packet-requests` by hand is not processed.\n')
     return ('- If external model review is needed, save the packet file (diff and questions) in the workspace, present the\n'
@@ -70,16 +70,16 @@ def _external_review_line(env):
 
 def _loopback_section(env):
     """When a session-only loopback port exists, explain how to use it; otherwise state only that a random bind is blocked."""
-    if env.get('AGENT_GUARD_LOOPBACK_ALL') == '1':
+    if env.get('AGENTBELT_LOOPBACK_ALL') == '1':
         return ('- This workspace has **loopback fully open** (JVM build grant). Binding, listening on, and self-connecting to any local port works.\n'
                 '  Other local services of the same user (other agent servers, app ports) are reachable too, but they are unrelated to the project, so do not connect to them.\n')
-    port = env.get('AGENT_GUARD_LOOPBACK_PORT', '')
+    port = env.get('AGENTBELT_LOOPBACK_PORT', '')
     if not port:
         return '- Binding a local port outside the allow list is EPERM. Do not use options that turn on the VM service or a debugger.\n'
     return (f'- Binding a random local port is EPERM. If a local port is truly needed, only this session-only port `{port}`'
-            ' (`$AGENT_GUARD_LOOPBACK_PORT`) may be used. Both binding and self-connecting work.\n'
+            ' (`$AGENTBELT_LOOPBACK_PORT`) may be used. Both binding and self-connecting work.\n'
             '- Dart coverage needs a VM service port, so run it like this:\n'
-            '  `dart --enable-vm-service=$AGENT_GUARD_LOOPBACK_PORT --no-dds --disable-service-auth-codes test --coverage=coverage`\n'
+            '  `dart --enable-vm-service=$AGENTBELT_LOOPBACK_PORT --no-dds --disable-service-auth-codes test --coverage=coverage`\n'
             '  (Typing only `dart test --coverage` opens a random port and hangs.)\n')
 
 
@@ -94,7 +94,7 @@ def render_environment_notice(workspace, home, env, policy, extra=''):
     github_line = ('GitHub authentication is injected through the `GH_TOKEN`/`GITHUB_TOKEN` environment variables and the '
                    '`.git-credentials` file in the isolated home. `gh` and `git push` can be used as they are.' if has_github else
                    'No GitHub token is injected. A `gh` authentication failure is not an environment defect but a missing setup.')
-    return f"""# agent-guard isolated environment notice
+    return f"""# agentbelt isolated environment notice
 
 This session is running inside a macOS Seatbelt sandbox. The supervisor generated the facts below from the
 real policy values at session start. If the environment looks wrong, re-read this document before guessing:
@@ -129,7 +129,7 @@ Only the domains below are reachable, through the supervisor proxy. Anything out
 ## What cannot run in here
 
 - Nested `sandbox-exec` is refused by the kernel. Protected launchers such as `packet-ask`, `packet-ask-safe`,
-  and `agent_guard.py` therefore do not run inside this session and must run on the host. That is by design, not a failure.
+  and `agentbelt.py` therefore do not run inside this session and must run on the host. That is by design, not a failure.
 {_external_review_line(env)}
 ## Swift
 

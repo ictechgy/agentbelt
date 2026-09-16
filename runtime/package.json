@@ -1,5 +1,5 @@
 {
-  "name": "local-agent-guard-runtime",
+  "name": "local-agentbelt-runtime",
   "private": true,
   "version": "1.0.0",
   "dependencies": {

@@ -12,7 +12,7 @@ def load(name, file):
     spec = importlib.util.spec_from_file_location(name, ROOT/file)
     result = importlib.util.module_from_spec(spec); spec.loader.exec_module(result)
     return result
-g = load('compat_guard', 'agent_guard.py')
+g = load('compat_guard', 'agentbelt.py')
 hook = load('compat_hook', 'zcode_hook.py')
 
 class CompatibilityTests(unittest.TestCase):
@@ -22,10 +22,10 @@ class CompatibilityTests(unittest.TestCase):
             subprocess.run(['/usr/bin/git','init','--quiet',str(p)],env=env,check=True,capture_output=True)
             (p/'file.txt').write_text('synthetic content')
             command='git add file.txt && git -c user.name=Guard -c user.email=guard@example.invalid commit -qm synthetic'
-            r=subprocess.run(['/usr/bin/python3',str(ROOT/'agent_guard.py'),'exec',str(p),'--','/bin/bash','-c',command],capture_output=True,text=True,timeout=30)
+            r=subprocess.run(['/usr/bin/python3',str(ROOT/'agentbelt.py'),'exec',str(p),'--','/bin/bash','-c',command],capture_output=True,text=True,timeout=30)
             self.assertEqual(r.returncode,0,r.stderr)
             for target in ['.git/config','.git/hooks/pre-commit']:
-                r=subprocess.run(['/usr/bin/python3',str(ROOT/'agent_guard.py'),'exec',str(p),'--','/bin/sh','-c','echo unsafe >> "$1"','sh',target],capture_output=True,text=True,timeout=30)
+                r=subprocess.run(['/usr/bin/python3',str(ROOT/'agentbelt.py'),'exec',str(p),'--','/bin/sh','-c','echo unsafe >> "$1"','sh',target],capture_output=True,text=True,timeout=30)
                 self.assertNotEqual(r.returncode,0,target)
 
     def test_opencode_rejects_changed_binary_before_launch(self):
@@ -48,7 +48,7 @@ class CompatibilityTests(unittest.TestCase):
                 if '-axo' in args:
                     return SimpleNamespace(stdout='101 1 ZCode\n102 101 ZCode Helper\n103 102 Python\n')
                 if 'command=' in args:
-                    return SimpleNamespace(stdout=str(root/'agent_guard.py')+' zcode-backend app-server --stdio')
+                    return SimpleNamespace(stdout=str(root/'agentbelt.py')+' zcode-backend app-server --stdio')
                 return SimpleNamespace(stdout='current-start')
             with patch.object(g,'ROOT',root),patch.object(g.subprocess,'run',side_effect=process), \
                  patch('ctypes.CDLL',return_value=SimpleNamespace(sandbox_check=Mock(return_value=1))):
@@ -96,7 +96,7 @@ except PermissionError: print('PRIVATE_DENIED',flush=True)
 else: sys.exit(5)
 s.settimeout(10);conn,_=s.accept();conn.sendall(b'GUARD_DEV_TEST');conn.close()
 '''
-                runner="import sys;sys.path.insert(0,sys.argv[1]);import agent_guard as g;from pathlib import Path;sys.exit(g.run_confined('dev-test',Path(sys.argv[2]),['/usr/bin/python3','-I','-c',sys.argv[3],sys.argv[4],sys.argv[5]],ephemeral=True,dev_ports=[int(sys.argv[4])]))"
+                runner="import sys;sys.path.insert(0,sys.argv[1]);import agentbelt as g;from pathlib import Path;sys.exit(g.run_confined('dev-test',Path(sys.argv[2]),['/usr/bin/python3','-I','-c',sys.argv[3],sys.argv[4],sys.argv[5]],ephemeral=True,dev_ports=[int(sys.argv[4])]))"
                 received=[]
                 def browser():
                     for _ in range(200):

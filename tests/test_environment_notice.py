@@ -7,7 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 import environment_notice as notice
 
 
@@ -36,7 +36,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn(str(self.home), self.text)
         self.assertIn(str(self.home / 'tmp'), self.text)
         self.assertIn(str(self.workspace), self.text)
-        self.assertIn('AGENT_GUARD_ENVIRONMENT.md', self.text)
+        self.assertIn('AGENTBELT_ENVIRONMENT.md', self.text)
 
     def test_lists_reachable_domains_and_readable_paths(self):
         self.assertIn('pub.dev:443', self.text)
@@ -65,15 +65,15 @@ class RenderTests(unittest.TestCase):
 
     def test_explains_the_session_loopback_port_for_dart_coverage(self):
         """A real session reported that dart test --coverage hangs on the VM service port."""
-        with_port = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENT_GUARD_LOOPBACK_PORT='47311'), self.policy)
+        with_port = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENTBELT_LOOPBACK_PORT='47311'), self.policy)
         self.assertIn('47311', with_port)
-        self.assertIn('--enable-vm-service=$AGENT_GUARD_LOOPBACK_PORT', with_port)
+        self.assertIn('--enable-vm-service=$AGENTBELT_LOOPBACK_PORT', with_port)
         self.assertIn('--no-dds', with_port)
         self.assertIn('EPERM', self.text)
 
     def test_relay_session_points_at_packet_review_instead_of_the_user(self):
         """A real session followed the 'request host execution and stop' clause and did not use packet-review."""
-        relayed = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENT_GUARD_PACKET_REVIEW='1'), self.policy)
+        relayed = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENTBELT_PACKET_REVIEW='1'), self.policy)
         self.assertNotIn('for the user to run on the host terminal', relayed)
         self.assertNotIn('and then stop. Do not explore retries or workarounds.', relayed)
         self.assertIn('`packet-review`', relayed)
@@ -124,15 +124,15 @@ class ZcodeWiringTests(unittest.TestCase):
 
 class DeliveryTests(unittest.TestCase):
     def test_notice_is_readable_but_locked_in_isolated_home(self):
-        status, out = confined('cat "$HOME/AGENT_GUARD_ENVIRONMENT.md" | head -3; '
-                               'echo tampered 2>/dev/null >> "$HOME/AGENT_GUARD_ENVIRONMENT.md" && echo WRITE_OK || echo WRITE_DENIED')
+        status, out = confined('cat "$HOME/AGENTBELT_ENVIRONMENT.md" | head -3; '
+                               'echo tampered 2>/dev/null >> "$HOME/AGENTBELT_ENVIRONMENT.md" && echo WRITE_OK || echo WRITE_DENIED')
         self.assertEqual(status, 0, out)
-        self.assertIn('agent-guard', out)
+        self.assertIn('agentbelt', out)
         self.assertIn('WRITE_DENIED', out)
         self.assertNotIn('WRITE_OK', out)
 
     def test_instruction_files_receive_the_same_notice(self):
-        status, out = confined('cmp -s "$HOME/AGENT_GUARD_ENVIRONMENT.md" "$HOME/.zcode/AGENTS.md" && echo SAME || echo DIFF; '
+        status, out = confined('cmp -s "$HOME/AGENTBELT_ENVIRONMENT.md" "$HOME/.zcode/AGENTS.md" && echo SAME || echo DIFF; '
                                'echo x 2>/dev/null >> "$HOME/.zcode/AGENTS.md" && echo WRITE_OK || echo WRITE_DENIED',
                                instruction_files=['.zcode/AGENTS.md'])
         self.assertEqual(status, 0, out)
@@ -140,7 +140,7 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('WRITE_DENIED', out)
 
     def test_protected_opencode_config_directory_receives_notice(self):
-        status, out = confined('cmp -s "$OPENCODE_CONFIG_DIR/AGENTS.md" "$HOME/AGENT_GUARD_ENVIRONMENT.md" && echo SAME || echo DIFF; '
+        status, out = confined('cmp -s "$OPENCODE_CONFIG_DIR/AGENTS.md" "$HOME/AGENTBELT_ENVIRONMENT.md" && echo SAME || echo DIFF; '
                                'grep -c "$HOME" "$OPENCODE_CONFIG_DIR/AGENTS.md"; '
                                'echo x 2>/dev/null >> "$OPENCODE_CONFIG_DIR/AGENTS.md" && echo WRITE_OK || echo WRITE_DENIED',
                                protect_opencode_config=True)

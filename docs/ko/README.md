@@ -1,7 +1,7 @@
 # 이 맥의 에이전트 보호 실행기
 
 리뷰에서 검증된 보호 결함을 수정했다. [수정·검증 기록](REPAIRS.md)에 변경과 검증 범위를 기록했다.
-[원래 리뷰 보고서](.codex/artifacts/ultra-review/agent-guard-eaa74cf67b0c430d/report.md)는 수정 전 재현 기록이다.
+[원래 리뷰 보고서](.codex/artifacts/ultra-review/agentbelt-eaa74cf67b0c430d/report.md)는 수정 전 재현 기록이다.
 
 최근 실제 사용에서 발견한 시작·대화·provider 문제와 Dock 개선은 [복구 기록](RECOVERY.md)에 정리했다.
 
@@ -9,8 +9,8 @@
 
 [호환성 적용 기록](COMPATIBILITY.md)에 riskgate 통합, Git 작업, 업데이트 검사와 남은 승인·실기기 검증을 정리했다.
 
-- 상태 확인: `agent-guard doctor`
-- Zcode/OpenCode 업데이트 후: `agent-guard verify-updates`
+- 상태 확인: `agentbelt doctor`
+- Zcode/OpenCode 업데이트 후: `agentbelt verify-updates`
 - Claude Code에서도 `/packet-ask-safe` 사용 가능. 호출 대상은 GLM이며 Claude Code가 MAIN 역할이다.
 
 ## 현재 상태
@@ -130,7 +130,7 @@ Zcode는 종료 후 보호 실행기로 다시 열어 새 백엔드를 시작해
 ## 검증
 
 ```sh
-cd ~/.local/share/agent-guard
+cd ~/.local/share/agentbelt
 /usr/bin/python3 -m unittest discover -s tests -v
 ```
 

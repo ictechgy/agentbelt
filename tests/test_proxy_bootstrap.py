@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 
 DISPATCHER = ('const {getGlobalDispatcher} = await import('
               'new URL("runtime/node_modules/undici/index.js", "file://' + str(ROOT) + '/x"));'
@@ -67,7 +67,7 @@ class ProxyBootstrapTests(unittest.TestCase):
             captured['prepare_home'](Path(home), env)
         self.assertEqual(env['NODE_OPTIONS'],
                          '--import ' + (ROOT / 'proxy_bootstrap.mjs').as_uri())
-        self.assertEqual(env['AGENT_GUARD_BOOTSTRAP'], 'zcode')
+        self.assertEqual(env['AGENTBELT_BOOTSTRAP'], 'zcode')
 
     def test_pinned_runtime_still_provides_undici(self):
         manifest = json.loads((ROOT / 'runtime/node_modules/undici/package.json').read_text())

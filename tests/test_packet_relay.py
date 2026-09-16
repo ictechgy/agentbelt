@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 from adapters import packet_relay
 
 
@@ -21,20 +21,20 @@ class VersionGateTests(unittest.TestCase):
         pinned = json.loads((ROOT / 'state/packet-ask-version.json').read_text())['version']
         self.assertRegex(pinned, r'^\d+\.\d+\.\d+$')
         self.assertEqual(g.packet_ask_pinned_version(), pinned)
-        self.assertNotRegex((ROOT / 'agent_guard.py').read_text(), r"PACKET_ASK_VERSION = '\d")
+        self.assertNotRegex((ROOT / 'agentbelt.py').read_text(), r"PACKET_ASK_VERSION = '\d")
         entry = (ROOT / 'packet_entry.py').read_text()
         self.assertNotRegex(entry, r"!= '\d+\.\d+\.\d+'")
-        self.assertIn('AGENT_GUARD_PACKET_ASK_VERSION', entry)
+        self.assertIn('AGENTBELT_PACKET_ASK_VERSION', entry)
 
     def test_packet_launch_hands_the_pinned_version_to_the_entry(self):
         arguments, domains, env = g.prepare_packet_request(['inspect', 'review', '--files', 'a.py'])
-        self.assertEqual(env['AGENT_GUARD_PACKET_ASK_VERSION'], g.packet_ask_pinned_version())
+        self.assertEqual(env['AGENTBELT_PACKET_ASK_VERSION'], g.packet_ask_pinned_version())
 
     def test_entry_refuses_without_the_supervisor_version(self):
         """Without the environment variable it is closed. Running it directly as a bypass does not load the adapter."""
         import runpy
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop('AGENT_GUARD_PACKET_ASK_VERSION', None)
+            os.environ.pop('AGENTBELT_PACKET_ASK_VERSION', None)
             with self.assertRaises(SystemExit):
                 runpy.run_path(str(ROOT / 'packet_entry.py'), run_name='__main__')
 
@@ -183,7 +183,7 @@ class ChannelTests(unittest.TestCase):
             self.assertTrue(helper.is_file())
             self.assertEqual(helper.stat().st_mode & 0o777, 0o500)
             self.assertTrue(env['PATH'].startswith(str(self.home / 'bin') + ':'))
-            self.assertEqual(env['AGENT_GUARD_PACKET_REVIEW'], '1')
+            self.assertEqual(env['AGENTBELT_PACKET_REVIEW'], '1')
             self.assertTrue((self.home / 'tmp/packet-requests').is_dir())
             self.assertIn('bin/packet-review', relay.read_only_home_paths())
 
@@ -300,7 +300,7 @@ class ZcodeWiringTests(unittest.TestCase):
                 captured['prepare_home'](home, env)
                 self.assertTrue((home / 'bin/packet-review').is_file())
                 self.assertTrue(env['PATH'].startswith(str(home / 'bin') + ':'))
-                self.assertEqual(env['AGENT_GUARD_BOOTSTRAP'], 'zcode')
+                self.assertEqual(env['AGENTBELT_BOOTSTRAP'], 'zcode')
             finally:
                 os.chdir(previous)
 

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 import riskgate_bridge as bridge
 
 POLICY = ('version: 1\ndefaults: prompt\n'
@@ -26,12 +26,12 @@ class PromptTelemetryTests(unittest.TestCase):
             home = Path(tmp)
             policy = home / 'policy.yaml'
             policy.write_text(POLICY)
-            environment = {'AGENT_GUARD_PROMPT_TELEMETRY': '1'} if telemetry else {}
+            environment = {'AGENTBELT_PROMPT_TELEMETRY': '1'} if telemetry else {}
             with patch.object(bridge, 'riskgate_policy', return_value=policy), \
                  patch.object(bridge.Path, 'home', return_value=home), \
                  patch.dict(os.environ, environment, clear=False):
                 if not telemetry:
-                    os.environ.pop('AGENT_GUARD_PROMPT_TELEMETRY', None)
+                    os.environ.pop('AGENTBELT_PROMPT_TELEMETRY', None)
                 verdict = bridge.riskgate_decision(
                     {'tool_input': {'command': command}, 'cwd': str(home)})
             entries = [json.loads(line) for line in

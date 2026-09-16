@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-spec=importlib.util.spec_from_file_location('packet_guard_test',ROOT/'agent_guard.py')
+spec=importlib.util.spec_from_file_location('packet_guard_test',ROOT/'agentbelt.py')
 g=importlib.util.module_from_spec(spec);spec.loader.exec_module(g)
 
 class PacketHostTests(unittest.TestCase):

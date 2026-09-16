@@ -94,7 +94,7 @@ def registered_workspaces():
 
 
 def restore_registered_workspace(workspace):
-    from agent_guard import run_confined
+    from agentbelt import run_confined
     identity = hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()[:20]
     source = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.zcode/cli/db/db.sqlite'
     destination = ROOT / 'state/homes/zcode' / identity / '.zcode/cli/db/db.sqlite'
@@ -125,7 +125,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument('workspace')
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT))
-    from agent_guard import workspace_path
+    from agentbelt import workspace_path
     print(json.dumps(restore_registered_workspace(workspace_path(args.workspace))))
 
 

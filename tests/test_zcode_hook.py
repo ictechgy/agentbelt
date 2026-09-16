@@ -62,7 +62,7 @@ class ZcodeHookTests(unittest.TestCase):
         updated = decision['updatedInput']
         argv = shlex.split(updated['command'])
         self.assertEqual(argv[:2], ['/usr/bin/python3', '-I'])
-        self.assertEqual(argv[2], str(ROOT / 'agent_guard.py'))
+        self.assertEqual(argv[2], str(ROOT / 'agentbelt.py'))
         self.assertEqual(argv[3], 'zcode-shell')
         self.assertEqual(argv[4], str(self.work))
         self.assertEqual(base64.b64decode(argv[5]).decode(), original)
@@ -98,7 +98,7 @@ class ZcodeHookTests(unittest.TestCase):
                    'tool_name': 'Grep', 'tool_input': {'pattern': 'test'}}
         result = subprocess.run(['/usr/bin/python3', '-I', str(ROOT / 'zcode_hook.py')],
                                 input=json.dumps(payload)+'\n', capture_output=True, text=True,
-                                env=dict(os.environ, AGENT_GUARD_BACKEND='zcode-v1'), timeout=10)
+                                env=dict(os.environ, AGENTBELT_BACKEND='zcode-v1'), timeout=10)
         self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['permissionDecision'], 'deny')
 
     def test_rewritten_bash_really_blocks_outside_file(self):

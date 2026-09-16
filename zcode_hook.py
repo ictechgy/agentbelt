@@ -30,7 +30,7 @@ try:
     # failure here leaves no basis for a decision, so honour the deny contract
     # instead of exiting on an uncaught import error. The exception text carries
     # installation paths, so only a fixed message is emitted.
-    from agent_guard import GuardError, ROOT, SECRET_NAMES, inside_zcode_sandbox, workspace_path
+    from agentbelt import GuardError, ROOT, SECRET_NAMES, inside_zcode_sandbox, workspace_path
     from riskgate_bridge import riskgate_decision
 except Exception:
     emit(decision('deny', 'The request was blocked because the protection policy modules could not be loaded.'))
@@ -121,8 +121,8 @@ def evaluate(payload):
             verdict = 'ask'
             encoded = base64.b64encode(command.encode('utf-8')).decode('ascii')
             # Invoke the supervisor by its own path rather than through a wrapper: the wrapper directory is an
-            # installer choice (AGENT_GUARD_BIN) that the hook, running inside the sandbox, cannot look up.
-            updated['command'] = shlex.join(['/usr/bin/python3', '-I', str(ROOT / 'agent_guard.py'),
+            # installer choice (AGENTBELT_BIN) that the hook, running inside the sandbox, cannot look up.
+            updated['command'] = shlex.join(['/usr/bin/python3', '-I', str(ROOT / 'agentbelt.py'),
                                              'zcode-shell', str(workspace), encoded])
         return decision(verdict, 'The riskgate and project-scope sandbox policies are applied.', updated)
     if tool in {'Agent', 'Task'} and confined:

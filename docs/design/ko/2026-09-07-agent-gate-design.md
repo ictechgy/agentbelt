@@ -74,7 +74,7 @@ safecode와 Zcode Safe의 OS 제약이 실사용을 방해한다. 두 가지가 
 | `gate_judge.py` | 도구 없는 단발 LLM 호출. Claude 주, Codex 폴백 | 감독자가 띄우는 별도 샌드박스 |
 | `plugin/guard-permission-gate.js` | OpenCode `permission.ask`와 `tool.execute.before` 훅 | 샌드박스 안 |
 | `zcode_hook.py` (수정) | 회색지대일 때만 브로커에 질의 | 샌드박스 안 |
-| `agent_guard.py` (수정) | 서비스 기동, 브로커 포트 전달, 플러그인 시딩 | 감독자 |
+| `agentbelt.py` (수정) | 서비스 기동, 브로커 포트 전달, 플러그인 시딩 | 감독자 |
 
 `orca_broker.StatusBroker`는 경로별 핸들러를 받는 `SupervisorService`로 리팩터한다. 기존 Orca 상태 중계는 `/hook/opencode` 핸들러로 그대로 옮기고 동작과 회귀 테스트를 유지한다.
 
@@ -114,7 +114,7 @@ safecode와 Zcode Safe의 OS 제약이 실사용을 방해한다. 두 가지가 
 
 서비스는 회색지대에서 `allow`로 내린 결정을 `state/gate-decisions.jsonl`에 기록한다. 명령 텍스트는 남기되 파일 내용이나 인자 값 중 비밀로 보이는 것은 남기지 않는다.
 
-`agent-guard gate-review`는 반복 승인된 서명을 횟수와 함께 보여주고 riskgate 규칙 초안을 제시한다. 사용자가 승인한 항목만 `~/.config/riskgate/riskgate.yaml`에 추가된다. 서비스는 정책 파일에 절대 쓰지 않는다.
+`agentbelt gate-review`는 반복 승인된 서명을 횟수와 함께 보여주고 riskgate 규칙 초안을 제시한다. 사용자가 승인한 항목만 `~/.config/riskgate/riskgate.yaml`에 추가된다. 서비스는 정책 파일에 절대 쓰지 않는다.
 
 ## 설치 경로
 
@@ -135,11 +135,11 @@ LLM은 처음 보는 패키지명 같은 회색지대만 판단한다. 타이포
 
 승인된 설치는 감독자가 `run_confined(ephemeral=True, domains=<검토된 패키지 도메인>)`으로 실행한다. 쓰기는 워크스페이스로 제한된다. 설치 프로세스 자체가 격리되므로 postinstall이 허용된 경우에도 호스트에서 실행되지 않는다.
 
-검토된 패키지 도메인은 `agent_guard.development_options()`가 이미 상수로 갖고 있다. `registry.npmjs.org:443`, `pypi.org:443`, `files.pythonhosted.org:443`, `github.com:443`, `codeload.github.com:443`.
+검토된 패키지 도메인은 `agentbelt.development_options()`가 이미 상수로 갖고 있다. `registry.npmjs.org:443`, `pypi.org:443`, `files.pythonhosted.org:443`, `github.com:443`, `codeload.github.com:443`.
 
 ### 에이전트별 경로
 
-- **Zcode**: 통로가 이미 있다. `zcode_hook.py`가 Bash를 `agent-guard zcode-shell`로 재작성하고, 그 경로가 `run_confined(ephemeral=True, domains=development['packageDomains'])`로 실행한다. 현재 그 목록은 비어 있으므로 `zcode-shell`에 승인 토큰 인자를 추가한다. 게이트가 설치를 승인하면 감독자가 해당 명령 서명에 대해 일회용 토큰을 발급하고, `zcode-shell`은 토큰이 유효할 때만 그 실행에 한해 검토된 패키지 도메인을 적용한다. 토큰은 한 번 쓰면 소멸하며 `development.json`은 비어 있는 채로 둔다.
+- **Zcode**: 통로가 이미 있다. `zcode_hook.py`가 Bash를 `agentbelt zcode-shell`로 재작성하고, 그 경로가 `run_confined(ephemeral=True, domains=development['packageDomains'])`로 실행한다. 현재 그 목록은 비어 있으므로 `zcode-shell`에 승인 토큰 인자를 추가한다. 게이트가 설치를 승인하면 감독자가 해당 명령 서명에 대해 일회용 토큰을 발급하고, `zcode-shell`은 토큰이 유효할 때만 그 실행에 한해 검토된 패키지 도메인을 적용한다. 토큰은 한 번 쓰면 소멸하며 `development.json`은 비어 있는 채로 둔다.
 - **OpenCode**: `permission.ask`는 상태만 반환하므로 재작성이 불가능하다. 대신 `"tool.execute.before"` 훅을 쓴다. 이 훅은 `output.args`를 수정할 수 있다. 설치 패턴을 감지해 `/gate/install`에 위임하고, 감독자가 완료하면 args의 명령을 감독자가 돌려준 종료 코드와 요약을 그대로 출력하는 `printf` 한 줄로 교체한다. 교체된 명령은 네트워크도 쓰기도 하지 않는다. 설치 산출물은 워크스페이스에 떨어지므로 세션 샌드박스에서 그대로 보인다.
 
 ## 인터페이스

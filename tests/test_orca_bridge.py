@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 from adapters import orca_broker
 
 
@@ -159,7 +159,7 @@ class SandboxReachabilityTests(unittest.TestCase):
                 status = g.run_confined(
                     'opencode', work,
                     ['/usr/bin/python3', '-I', str(probe), str(reachable.port), str(blocked.port)],
-                    extra_env={'AGENT_GUARD_BROKER_PORT': str(reachable.port)},
+                    extra_env={'AGENTBELT_BROKER_PORT': str(reachable.port)},
                     ephemeral=True, stdout=output)
                 output.seek(0)
                 result = json.loads(output.read().decode().splitlines()[-1])
@@ -205,7 +205,7 @@ class LaunchWiringTests(unittest.TestCase):
                          ['orca-opencode-status.js'])
         child = captured['extra_env']
         self.assertEqual(child['ORCA_PANE_KEY'], 'real-pane')
-        self.assertEqual(child['AGENT_GUARD_BROKER_PORT'], child['ORCA_AGENT_HOOK_PORT'])
+        self.assertEqual(child['AGENTBELT_BROKER_PORT'], child['ORCA_AGENT_HOOK_PORT'])
         self.assertNotEqual(child['ORCA_AGENT_HOOK_TOKEN'], 'synthetic-orca-token')
 
 

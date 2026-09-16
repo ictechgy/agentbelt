@@ -39,7 +39,7 @@ v1 은 "요청에서 `--registry` 플래그를 받지 않는다"고 쓰고도 �
              → riskgate: dangerous → 훅은 deny + 안내
              → (선택) 워크스페이스에 후보를 적은 요청 파일
 
-[호스트]   사람: agent-guard install npm lodash@4.17.21
+[호스트]   사람: agentbelt install npm lodash@4.17.21
              1) 좌표 확인      사람이 이름과 버전을 직접 지정하거나 후보에서 고른다
              2) 해석 승인      "registry.npmjs.org 에 이 좌표의 메타데이터를 물어봐도 되는가"
              3) 폐포 표시      해석된 전체 의존성 목록 + integrity

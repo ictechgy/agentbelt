@@ -132,7 +132,7 @@ class DevPortLoopbackTests(unittest.TestCase):
         """dart test --coverage connects to its own VM service port over a websocket. Allowing only bind makes it hang."""
         import json as _json, socket, subprocess as _sp, tempfile as _tf
         from pathlib import Path as _P
-        import agent_guard as _g
+        import agentbelt as _g
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
         script = ('/Library/Developer/CommandLineTools/usr/bin/python3 -I - <<PY\n'
@@ -156,11 +156,11 @@ class DevPortLoopbackTests(unittest.TestCase):
         """safecode and zcode each get a dedicated loopback port per session, and can bind to and self-connect on that port."""
         import tempfile as _tf
         from pathlib import Path as _P
-        import agent_guard as _g
-        script = ('echo "PORT=$AGENT_GUARD_LOOPBACK_PORT"; echo "DEV=$AGENT_GUARD_DEV_PORTS"\n'
+        import agentbelt as _g
+        script = ('echo "PORT=$AGENTBELT_LOOPBACK_PORT"; echo "DEV=$AGENTBELT_DEV_PORTS"\n'
                   '/Library/Developer/CommandLineTools/usr/bin/python3 -I - <<PY\n'
                   'import os, socket, threading\n'
-                  'p = int(os.environ["AGENT_GUARD_LOOPBACK_PORT"])\n'
+                  'p = int(os.environ["AGENTBELT_LOOPBACK_PORT"])\n'
                   's = socket.socket(); s.bind(("127.0.0.1", p)); s.listen(1)\n'
                   'threading.Thread(target=lambda: s.accept()[0].sendall(b"SELF_OK"), daemon=True).start()\n'
                   'print(socket.create_connection(("127.0.0.1", p), timeout=5).recv(16).decode())\n'

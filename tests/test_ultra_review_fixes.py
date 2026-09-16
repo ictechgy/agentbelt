@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 from adapters import packet_relay
 from adapters import packet_promote
 
@@ -38,11 +38,11 @@ class SafeWriteTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((self.home / '.zcode').stat().st_mode), 0o700)
 
     def test_final_symlink_is_replaced_not_followed(self):
-        os.symlink(str(self.outside), str(self.home / 'AGENT_GUARD_ENVIRONMENT.md'))
-        g.write_private_file(self.home, 'AGENT_GUARD_ENVIRONMENT.md', 'notice')
+        os.symlink(str(self.outside), str(self.home / 'AGENTBELT_ENVIRONMENT.md'))
+        g.write_private_file(self.home, 'AGENTBELT_ENVIRONMENT.md', 'notice')
         self.assertEqual(self.outside.read_text(), 'KEEP')
-        self.assertFalse((self.home / 'AGENT_GUARD_ENVIRONMENT.md').is_symlink())
-        self.assertEqual((self.home / 'AGENT_GUARD_ENVIRONMENT.md').read_text(), 'notice')
+        self.assertFalse((self.home / 'AGENTBELT_ENVIRONMENT.md').is_symlink())
+        self.assertEqual((self.home / 'AGENTBELT_ENVIRONMENT.md').read_text(), 'notice')
 
     def test_intermediate_symlink_is_refused(self):
         os.symlink(str(self.outside_dir), str(self.home / '.zcode'))
@@ -244,7 +244,7 @@ class LockedAncestorTests(unittest.TestCase):
             (work / 'p.sh').write_text(
                 'mv "$HOME/.zcode" "$HOME/.zcode2" 2>/dev/null && echo PARENT_RENAMED || echo PARENT_LOCKED\n'
                 'mkdir "$HOME/.zcode/scratch" 2>/dev/null && echo CHILD_MKDIR_OK || echo CHILD_MKDIR_BLOCKED\n'
-                'mv "$HOME/AGENT_GUARD_ENVIRONMENT.md" "$HOME/x.md" 2>/dev/null && echo NOTICE_RENAMED || echo NOTICE_LOCKED\n'
+                'mv "$HOME/AGENTBELT_ENVIRONMENT.md" "$HOME/x.md" 2>/dev/null && echo NOTICE_RENAMED || echo NOTICE_LOCKED\n'
                 'echo hi > "$HOME/.zcode/scratch/free.txt" && echo FREE_WRITE_OK\n')
             with tempfile.TemporaryFile() as out:
                 status = g.run_confined('exec', work, ['/bin/bash', str(work / 'p.sh')], ephemeral=True,
@@ -263,7 +263,7 @@ class RunnerZcodeConfigTests(unittest.TestCase):
             outside = Path(tmp) / 'victim'; outside.mkdir()
             def prepare(home, env):
                 os.symlink(str(outside), str(home / '.zcode'))
-                env.update({'AGENT_GUARD_BOOTSTRAP': 'zcode'})
+                env.update({'AGENTBELT_BOOTSTRAP': 'zcode'})
             with tempfile.TemporaryFile() as out:
                 status = g.run_confined('exec', Path(tmp), ['/bin/echo', 'RAN'], ephemeral=True, prepare_home=prepare,
                                         extra_reads=[ROOT / 'state/zcode-agent-config.json'], stdout=out)

@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Install the AutoClaw coding runtime so that it runs through the agent-guard launcher.
+"""Install the AutoClaw coding runtime so that it runs through the agentbelt launcher.
 
 What it does: (1) record the reviewed AutoClaw app and bundled Zcode CLI in the profile and the compatibility baseline,
 (2) install the `~/.local/bin/autoclaw-zcode-safe` launcher, (3) change the `command` of the zcode-runtime plugin in
@@ -22,7 +22,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
 sys.path.insert(0, str(ROOT))
-import agent_guard
+import agentbelt
 from adapters import compatibility_check
 from adapters.configure_existing import publish_settings
 
@@ -39,7 +39,7 @@ def launcher_path():
 
 def launcher_exec_line():
     """The last line of the launcher. It passes on the arguments the plugin hands over (version / agent-server) unchanged."""
-    return 'exec /usr/bin/python3 -I ' + shlex.quote(str(ROOT / 'agent_guard.py')) + ' autoclaw-backend "$@"\n'
+    return 'exec /usr/bin/python3 -I ' + shlex.quote(str(ROOT / 'agentbelt.py')) + ' autoclaw-backend "$@"\n'
 
 
 def launcher_text():
@@ -80,7 +80,7 @@ def previous_launcher_texts():
 
 def read_bundle():
     """Read the version and the bundled CLI hash from the installed AutoClaw app. If the app is missing, refuse to install."""
-    bundle = compatibility_check.autoclaw_candidate(agent_guard.AUTOCLAW_APP)
+    bundle = compatibility_check.autoclaw_candidate(agentbelt.AUTOCLAW_APP)
     if bundle is None:
         raise RuntimeError('AutoClaw.app is not installed; nothing to protect.')
     return bundle
@@ -151,7 +151,7 @@ def patched_plugin_entry(entry):
 
 def backup_once(path, data):
     """Keep the original in state/backups only once. If a kept copy already exists, do not make a new one."""
-    backups = agent_guard.private_dir(STATE / 'backups')
+    backups = agentbelt.private_dir(STATE / 'backups')
     if any(backups.glob(path.name + '.*')):
         return
     target = backups / (path.name + '.' + time.strftime('%Y%m%d-%H%M%S'))
@@ -258,7 +258,7 @@ def discord_guild_allowlist(channels, user_ids, guild_id, channel_id=None):
 
 AGENT_TOOLS_NOTE = """# TOOLS.md - Local Notes
 
-### Execution rules for this environment (agent-guard)
+### Execution rules for this environment (agentbelt)
 
 - This installation has **no** host shell tools: `exec`, `process` and `gateway` were removed on purpose. Do not ask for them to be enabled.
 - This workspace is only the coordinator's notes folder. The project repository is not here. Send every read, edit and command
@@ -302,7 +302,7 @@ def seed_private_workspace(agent_id):
     note = directory / 'TOOLS.md'
     if note.is_symlink():
         raise RuntimeError('Refusing a symlinked TOOLS.md')
-    if not note.is_file() or 'Execution rules for this environment (agent-guard)' not in note.read_text():
+    if not note.is_file() or 'Execution rules for this environment (agentbelt)' not in note.read_text():
         with open(note, 'a', encoding='utf-8') as stream:
             stream.write(('' if not note.exists() or note.stat().st_size == 0 else '\n') + AGENT_TOOLS_NOTE)
 
@@ -376,7 +376,7 @@ def install(rebaseline=False, deny_host_exec=True, discord_users=None, discord_d
 def main(rebaseline=False, deny_host_exec=True, discord_users=None, discord_dm=False, discord_guild=None, discord_channel=None,
          private_agent_workspace=None, discord_agent=None):
     """Install while holding the same lock as the other settings publishers (configure_existing, verify-updates)."""
-    state = agent_guard.private_dir(STATE)
+    state = agentbelt.private_dir(STATE)
     descriptor = os.open(str(state / '.settings-import.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

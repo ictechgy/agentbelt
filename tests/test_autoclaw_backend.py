@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 
 BROKER_ENV = {'AUTOCLAW_MODEL_BROKER_OPENAI_BASE_URL': 'http://127.0.0.1:43210/internal/model-proxy/v1',
               'AUTOCLAW_MODEL_BROKER_ANTHROPIC_BASE_URL': 'http://127.0.0.1:43210/internal/model-proxy/anthropic/v1'}
@@ -237,7 +237,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(captured['command'], ['/synthetic/state/autoclaw-runtime/zcode', 'agent-server'])
         self.assertIn('/synthetic/state/autoclaw-runtime/zcode', [str(p) for p in captured['extra_reads']])
         self.assertEqual(sorted(captured['read_only_workspace_paths']), ['.agents/mcp.json', '.zcode', 'zcode.json'])
-        self.assertEqual(captured['extra_env']['AGENT_GUARD_BROKER_PORT'], '43210')
+        self.assertEqual(captured['extra_env']['AGENTBELT_BROKER_PORT'], '43210')
         self.assertEqual(captured['args'][0], ['pub.dev:443'])
         # A repository-scoped GitHub token is injected as in safecode and Zcode Safe (user decision, 2026-09-15). Being yolo, push also goes through without confirmation.
         self.assertTrue(captured['github'])
@@ -254,8 +254,8 @@ class LauncherTests(unittest.TestCase):
             env = {'PATH': '/usr/bin'}
             captured['prepare_home'](home, env)
             self.assertTrue((home / '.zcode/cli').is_dir())
-        self.assertEqual(env['AGENT_GUARD_BOOTSTRAP'], 'zcode')
-        self.assertEqual(env['AGENT_GUARD_BACKEND'], 'zcode-v1')
+        self.assertEqual(env['AGENTBELT_BOOTSTRAP'], 'zcode')
+        self.assertEqual(env['AGENTBELT_BACKEND'], 'zcode-v1')
         self.assertEqual(env['ZCODE_HOME'], str(home / '.zcode'))
 
     def test_agent_server_discards_the_staged_copy_and_writes_a_receipt_on_failure(self):
@@ -428,12 +428,12 @@ class LoopbackBoundaryTests(unittest.TestCase):
                   '    try:\n        s.connect(("127.0.0.1", port)); return "OPEN"\n'
                   '    except OSError as e:\n        return "DENIED" if e.errno in (1, 13) else "ERR" + str(e.errno)\n'
                   '    finally:\n        s.close()\n'
-                  'print("BROKER=" + probe(int(os.environ["AGENT_GUARD_BROKER_PORT"])))\n'
+                  'print("BROKER=" + probe(int(os.environ["AGENTBELT_BROKER_PORT"])))\n'
                   'print("OTHER=" + probe(int(os.environ["OTHER_PORT"])))\n')
         try:
             with tempfile.TemporaryDirectory(prefix='loopback-', dir=Path.home()) as tmp, tempfile.TemporaryFile() as out:
                 status = g.run_confined('exec', Path(tmp), ['/usr/bin/python3', '-c', script], ephemeral=True, stdout=out,
-                                        extra_env={'AGENT_GUARD_BROKER_PORT': str(broker.getsockname()[1]), 'OTHER_PORT': str(other.getsockname()[1])})
+                                        extra_env={'AGENTBELT_BROKER_PORT': str(broker.getsockname()[1]), 'OTHER_PORT': str(other.getsockname()[1])})
                 out.seek(0); text = out.read().decode(errors='replace')
         finally:
             broker.close(); other.close()
@@ -528,11 +528,11 @@ class RunnerBrokerProxyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='broker-noproxy-', dir=Path.home()) as tmp:
             def prepare(home, env):
                 g.private_dir(g.private_dir(home / '.zcode') / 'cli')
-                env.update({'AGENT_GUARD_BOOTSTRAP': 'zcode', 'AGENT_GUARD_BROKER_PORT': '43210'})
+                env.update({'AGENTBELT_BOOTSTRAP': 'zcode', 'AGENTBELT_BROKER_PORT': '43210'})
             with tempfile.TemporaryFile() as out:
                 status = g.run_confined('exec', Path(tmp), ['/bin/sh', '-c', 'cat "$HOME/.zcode/cli/config.json"'], ephemeral=True,
                                         prepare_home=prepare, extra_reads=[ROOT / 'state/zcode-agent-config.json'],
-                                        stdout=out, extra_env={'AGENT_GUARD_BROKER_PORT': '43210'})
+                                        stdout=out, extra_env={'AGENTBELT_BROKER_PORT': '43210'})
                 out.seek(0)
                 text = out.read().decode(errors='replace')
             self.assertEqual(status, 0, text)
@@ -543,7 +543,7 @@ class RunnerBrokerProxyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='nobroker-', dir=Path.home()) as tmp:
             def prepare(home, env):
                 g.private_dir(g.private_dir(home / '.zcode') / 'cli')
-                env.update({'AGENT_GUARD_BOOTSTRAP': 'zcode'})
+                env.update({'AGENTBELT_BOOTSTRAP': 'zcode'})
             with tempfile.TemporaryFile() as out:
                 status = g.run_confined('exec', Path(tmp), ['/bin/sh', '-c', 'cat "$HOME/.zcode/cli/config.json"'], ephemeral=True,
                                         prepare_home=prepare, extra_reads=[ROOT / 'state/zcode-agent-config.json'], stdout=out)
@@ -572,7 +572,7 @@ class InstallerTests(unittest.TestCase):
             (home / '.local/bin').mkdir(parents=True)
             with patch.object(installer, 'HOME', home), patch.object(installer, 'ROOT', root), \
                  patch.object(installer, 'STATE', root / 'state'), patch.object(installer, 'OPENCLAW_STATE', state_dir), \
-                 patch.object(installer.agent_guard, 'ROOT', root), patch.object(installer.agent_guard, 'AUTOCLAW_APP', app):
+                 patch.object(installer.agentbelt, 'ROOT', root), patch.object(installer.agentbelt, 'AUTOCLAW_APP', app):
                 installer.main()
                 updated = json.loads((state_dir / 'openclaw.json').read_text())
                 plugin = updated['plugins']['entries']['zcode-runtime']
@@ -588,7 +588,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(updated['plugins']['entries']['other'], {'enabled': True})
                 launcher = home / '.local/bin/autoclaw-zcode-safe'
                 self.assertEqual(launcher.stat().st_mode & 0o777, 0o700)
-                self.assertIn(str(root / 'agent_guard.py'), launcher.read_text())
+                self.assertIn(str(root / 'agentbelt.py'), launcher.read_text())
                 self.assertIn('autoclaw-backend', launcher.read_text())
                 baseline = json.loads((root / 'state/compatibility.json').read_text())
                 self.assertEqual(baseline['opencode'], {'version': 'x'})
@@ -618,7 +618,7 @@ class InstallerTests(unittest.TestCase):
             (home / '.local/bin').mkdir(parents=True)
             with patch.object(installer, 'HOME', home), patch.object(installer, 'ROOT', root), \
                  patch.object(installer, 'STATE', root / 'state'), patch.object(installer, 'OPENCLAW_STATE', state_dir), \
-                 patch.object(installer.agent_guard, 'ROOT', root), patch.object(installer.agent_guard, 'AUTOCLAW_APP', app):
+                 patch.object(installer.agentbelt, 'ROOT', root), patch.object(installer.agentbelt, 'AUTOCLAW_APP', app):
                 with self.assertRaises(RuntimeError):
                     installer.main()
                 victim = home / 'victim.json'
@@ -633,9 +633,9 @@ class InstallerTests(unittest.TestCase):
         from contextlib import ExitStack
         stack = ExitStack()
         for target, name, value in [(installer, 'HOME', home), (installer, 'ROOT', root), (installer, 'STATE', root / 'state'),
-                                    (installer, 'OPENCLAW_STATE', state_dir), (installer.agent_guard, 'ROOT', root),
-                                    (installer.agent_guard, 'AUTOCLAW_APP', app),
-                                    (installer.agent_guard, 'AUTOCLAW_ZCODE', app / 'Contents/Resources/zcode/darwin-arm64/zcode')]:
+                                    (installer, 'OPENCLAW_STATE', state_dir), (installer.agentbelt, 'ROOT', root),
+                                    (installer.agentbelt, 'AUTOCLAW_APP', app),
+                                    (installer.agentbelt, 'AUTOCLAW_ZCODE', app / 'Contents/Resources/zcode/darwin-arm64/zcode')]:
             stack.enter_context(patch.object(target, name, value))
         return stack
 
@@ -677,7 +677,7 @@ class InstallerTests(unittest.TestCase):
         from adapters import install_autoclaw as installer
         with tempfile.TemporaryDirectory(prefix='launcher-', dir=Path.home()) as tmp:
             home = Path(tmp); root = home / 'guard'; (root / 'state').mkdir(parents=True, mode=0o700)
-            (root / 'agent_guard.py').write_text('import os, sys\nprint(os.getpid(), sys.argv[1:])\n')
+            (root / 'agentbelt.py').write_text('import os, sys\nprint(os.getpid(), sys.argv[1:])\n')
             workspace = home / 'ws'; workspace.mkdir()
             launcher = home / 'autoclaw-zcode-safe'
             with patch.object(installer, 'ROOT', root):
@@ -719,7 +719,7 @@ class InstallerTests(unittest.TestCase):
             launcher = home / '.local/bin/autoclaw-zcode-safe'
             with self.installer_context(installer, home, root, app, state_dir):
                 import shlex
-                previous = '#!/bin/sh\nexec /usr/bin/python3 -I ' + shlex.quote(str(root / 'agent_guard.py')) + ' autoclaw-backend "$@"\n'
+                previous = '#!/bin/sh\nexec /usr/bin/python3 -I ' + shlex.quote(str(root / 'agentbelt.py')) + ' autoclaw-backend "$@"\n'
                 launcher.write_text(previous); launcher.chmod(0o700)
                 installer.main()
                 self.assertEqual(launcher.read_text(), installer.launcher_text())
@@ -892,11 +892,11 @@ class InstallerTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     installer.main(private_agent_workspace='ghost')
                 installer.main(private_agent_workspace='programmer')  # safe to re-run
-                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('Execution rules for this environment (agent-guard)'), 1)
+                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('Execution rules for this environment (agentbelt)'), 1)
                 # A note that merely contains the word 'zcode_run' is not our rule: append the rules clause.
                 (Path(expected) / 'TOOLS.md').write_text('# notes\nuse zcode_run freely, exec is fine\n')
                 installer.main(private_agent_workspace='programmer')
-                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('Execution rules for this environment (agent-guard)'), 1)
+                self.assertEqual((Path(expected) / 'TOOLS.md').read_text().count('Execution rules for this environment (agentbelt)'), 1)
 
     def test_discord_agent_rebinds_the_channel_to_the_named_agent(self):
         """zcode_run is exposed only to auto-coder (hardcoded in the plugin). Point the Discord binding at that agent."""

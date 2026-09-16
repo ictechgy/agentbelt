@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 import environment_notice as notice
 
 
@@ -68,7 +68,7 @@ class LoopbackGrantTests(unittest.TestCase):
             self.assertTrue(captured['policy']['network']['allowLocalBinding'])
 
     def test_notice_explains_open_loopback(self):
-        env = {'HOME': '/tmp/h', 'TMPDIR': '/tmp/h/tmp', 'PUB_CACHE': '/tmp/h/.pub-cache', 'AGENT_GUARD_LOOPBACK_ALL': '1', 'XDG_CONFIG_HOME': '/tmp/h/.config'}
+        env = {'HOME': '/tmp/h', 'TMPDIR': '/tmp/h/tmp', 'PUB_CACHE': '/tmp/h/.pub-cache', 'AGENTBELT_LOOPBACK_ALL': '1', 'XDG_CONFIG_HOME': '/tmp/h/.config'}
         policy = {'network': {'allowedDomains': [], 'allowLocalBinding': True}, 'filesystem': {'allowRead': [], 'allowWrite': [], 'denyWrite': []}}
         text = notice.render_environment_notice(Path('/tmp/w'), Path('/tmp/h'), env, policy)
         self.assertIn('loopback fully open', text)
@@ -138,9 +138,9 @@ class GradleKeystoreGrantTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='ks-', dir=Path.home()) as tmp, patch.object(g.subprocess, 'call', fake_call):
             work = Path(tmp)
             g.run_confined('exec', work, ['/bin/true'], ephemeral=True)
-            self.assertNotIn('AGENT_GUARD_GRADLE_KEYSTORE_ROOT', captured['env'])
+            self.assertNotIn('AGENTBELT_GRADLE_KEYSTORE_ROOT', captured['env'])
             g.run_confined('exec', work, ['/bin/true'], ephemeral=True, allow_gradle_keystore=True)
-            self.assertEqual(captured['env'].get('AGENT_GUARD_GRADLE_KEYSTORE_ROOT'), str(work.resolve()))
+            self.assertEqual(captured['env'].get('AGENTBELT_GRADLE_KEYSTORE_ROOT'), str(work.resolve()))
 
     def test_granted_workspace_writes_gradle_keystore_but_not_other_secrets(self):
         """Real Seatbelt: the more specific allow beats the `*.keystore` deny, so only gradle.keystore is opened."""

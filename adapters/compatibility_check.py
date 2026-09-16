@@ -18,10 +18,10 @@ KIMI = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.kimi-code/bin/kimi'
 
 
 def guard_paths():
-    """The executable paths as resolved by agent_guard (config.json overrides included). Imported lazily because it is host only."""
+    """The executable paths as resolved by agentbelt (config.json overrides included). Imported lazily because it is host only."""
     sys.path.insert(0, str(ROOT))
-    import agent_guard
-    return agent_guard
+    import agentbelt
+    return agentbelt
 
 
 def digest(path):
@@ -77,9 +77,9 @@ def kimi_candidate(binary=None):
     # Running a not-yet-reviewed candidate on the host as is would let that binary read the clipboard and host files before it is
     # checked (review HIGH). The probe also runs inside the guard policy: no network, the one binary file as the only read, stdout only.
     sys.path.insert(0, str(ROOT))
-    import agent_guard
+    import agentbelt
     with tempfile.TemporaryDirectory(prefix='guard-kimi-version-', dir=Path.home()) as work, tempfile.TemporaryFile() as out:
-        status = agent_guard.run_confined('kimi-probe', Path(work), [str(binary), '--version'], domains=[], ephemeral=True,
+        status = agentbelt.run_confined('kimi-probe', Path(work), [str(binary), '--version'], domains=[], ephemeral=True,
                                           # If stderr is a file outside the sandbox, Node aborts with fstat EPERM (REPAIRS 2026-09-16). Pinned to /dev/null.
                                           extra_reads=[binary], stdout=out, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                           extra_env={'KIMI_DISABLE_TELEMETRY': '1', 'KIMI_CODE_NO_AUTO_UPDATE': '1',

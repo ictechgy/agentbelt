@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 
 
 def confined(script, extra_env=None):
@@ -55,7 +55,7 @@ class DartCoverageTests(unittest.TestCase):
                                                    "void main() { test('add', () { expect(add(1, 2), 3); }); }\n")
             (work / 'p.sh').write_text(
                 'dart pub get >/dev/null 2>&1 || { echo PUB_GET_FAILED; exit 1; }\n'
-                'dart --enable-vm-service=$AGENT_GUARD_LOOPBACK_PORT --no-dds --disable-service-auth-codes '
+                'dart --enable-vm-service=$AGENTBELT_LOOPBACK_PORT --no-dds --disable-service-auth-codes '
                 'test --coverage=coverage 2>&1 | tail -2\n'
                 'ls coverage/test/*.json >/dev/null 2>&1 && echo COVERAGE_WRITTEN || echo NO_COVERAGE\n')
             development = g.development_options()

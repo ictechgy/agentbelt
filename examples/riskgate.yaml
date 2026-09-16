@@ -1,5 +1,5 @@
-# Example riskgate policy for agent-guard (deterministic rules only).
-# Installed by `agent-guard init` when ~/.config/riskgate/riskgate.yaml does not exist yet.
+# Example riskgate policy for agentbelt (deterministic rules only).
+# Installed by `agentbelt init` when ~/.config/riskgate/riskgate.yaml does not exist yet.
 #
 # Mapping: prototype "ask" -> dangerous (prompt), allow-lists -> safe.
 # The prototype's LLM judge layer is intentionally NOT ported (riskgate
@@ -108,7 +108,7 @@ rules:
     match: { tool: 'Bash', cmd_regex: '^rm\b', within: 'cwd' }
     risk: safe
 
-  # ---- agent-guard packet-review (supervisor relay; the helper itself validates the request) ----
+  # ---- agentbelt packet-review (supervisor relay; the helper itself validates the request) ----
   - id: allow-packet-review
     match: { tool: 'Bash', cmd_regex: '^\s*(printf\b[^|;&]*\|\s*|echo\b[^|;&]*\|\s*|cat\b[^|;&]*\|\s*)?packet-(review|promote)\b(?!.*[;&`$(])' }
     risk: safe

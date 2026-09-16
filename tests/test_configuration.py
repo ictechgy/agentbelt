@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('configure_existing', ROOT / 'adapters/configure_existing.py')
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
-guard_spec = importlib.util.spec_from_file_location('agent_guard', ROOT / 'agent_guard.py')
+guard_spec = importlib.util.spec_from_file_location('agentbelt', ROOT / 'agentbelt.py')
 guard = importlib.util.module_from_spec(guard_spec)
 guard_spec.loader.exec_module(guard)
 

@@ -14,13 +14,13 @@
 //
 // Scope. NODE_OPTIONS is also inherited by the supervisor node and by other node tools the agent launches. Quietly
 // disabling their watching would cause misdiagnoses (review MEDIUM), so it is replaced only when `process.execPath`
-// equals the Kimi copy path handed over by the supervisor (`AGENT_GUARD_KIMI_BINARY`). In any other process it does
+// equals the Kimi copy path handed over by the supervisor (`AGENTBELT_KIMI_BINARY`). In any other process it does
 // nothing. Do not add side effects (file, network, output) here.
 'use strict';
 const fs = require('node:fs');
 const { EventEmitter } = require('node:events');
 
-if (process.env.AGENT_GUARD_KIMI_BINARY && process.execPath === process.env.AGENT_GUARD_KIMI_BINARY) {
+if (process.env.AGENTBELT_KIMI_BINARY && process.execPath === process.env.AGENTBELT_KIMI_BINARY) {
   const originalWatch = fs.watch;
 
   /** A watcher that emits no events. close emits 'close' only once, and an AbortSignal leads to close. */

@@ -1,4 +1,4 @@
-"""`agent-guard init` on a fresh installation: creates only what is missing, records baselines for installed agents,
+"""`agentbelt init` on a fresh installation: creates only what is missing, records baselines for installed agents,
 and leaves a machine without any agent in a state where `doctor` explains that instead of crashing."""
 import hashlib
 import io
@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 from adapters import bootstrap, compatibility_check as check, configure_existing
 
 

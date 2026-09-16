@@ -47,9 +47,9 @@ sys.argv=['packet-ask','research','--provider','glm','--effort','low','--timeout
 runpy.run_path(os.environ['GUARD_PACKET_ENTRY'],run_name='__main__')
 """
                 runner="""import sys
-sys.path.insert(0,sys.argv[1]);import agent_guard as g
+sys.path.insert(0,sys.argv[1]);import agentbelt as g
 from pathlib import Path
-sys.exit(g.run_confined('packet-fixture',Path(sys.argv[2]),[str(g.PACKET_PYTHON),'-I','-c',sys.argv[3],str(g.ROOT),sys.argv[4]],domains=[sys.argv[5]],extra_env={'PACKET_ASK_GLM_KEY':'SYNTHETIC_ONLY','PACKET_ASK_CLAUDE_BIN':str(g.CLAUDE.resolve()),'GUARD_PACKET_ENTRY':str(g.ROOT/'packet_entry.py'),'AGENT_GUARD_PACKET_ASK_VERSION':g.packet_ask_pinned_version()},ephemeral=True))
+sys.exit(g.run_confined('packet-fixture',Path(sys.argv[2]),[str(g.PACKET_PYTHON),'-I','-c',sys.argv[3],str(g.ROOT),sys.argv[4]],domains=[sys.argv[5]],extra_env={'PACKET_ASK_GLM_KEY':'SYNTHETIC_ONLY','PACKET_ASK_CLAUDE_BIN':str(g.CLAUDE.resolve()),'GUARD_PACKET_ENTRY':str(g.ROOT/'packet_entry.py'),'AGENTBELT_PACKET_ASK_VERSION':g.packet_ask_pinned_version()},ephemeral=True))
 """
                 port=server.server_address[1]
                 result=subprocess.run(['/usr/bin/python3','-I','-c',runner,str(ROOT),work,inner,f'http://127.0.0.1:{port}',f'127.0.0.1:{port}'],input='Is two plus two four? Answer YES.\n',capture_output=True,text=True,timeout=35)

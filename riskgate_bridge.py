@@ -7,7 +7,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'vendor'))
 from riskgate import judge, load_policy
-from agent_guard import GuardError, riskgate_policy
+from agentbelt import GuardError, riskgate_policy
 
 
 def riskgate_decision(payload):
@@ -24,7 +24,7 @@ def riskgate_decision(payload):
         # missing is impossible without it. The log stays on this host and is
         # written inside the isolated home, so treat it as untrusted input when
         # writing rules: the agent can read and forge entries there.
-        if verdict == 'ask' and os.environ.get('AGENT_GUARD_PROMPT_TELEMETRY') == '1':
+        if verdict == 'ask' and os.environ.get('AGENTBELT_PROMPT_TELEMETRY') == '1':
             record.update(command=str(payload['tool_input'].get('command', ''))[:4096],
                           risk=result.risk, rule=result.rule_id)
         audit = Path.home() / 'riskgate-decisions.jsonl'

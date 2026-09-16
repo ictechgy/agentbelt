@@ -1,9 +1,9 @@
 #!/bin/sh
-# Install agent-guard from this checkout into the operator's account.
+# Install agentbelt from this checkout into the operator's account.
 #
 # Layout after installation:
-#   $AGENT_GUARD_ROOT (default ~/.local/share/agent-guard)   code, pinned Node runtime, config.json, state/
-#   $AGENT_GUARD_BIN  (default ~/.local/bin)                  thin wrappers
+#   $AGENTBELT_ROOT (default ~/.local/share/agentbelt)   code, pinned Node runtime, config.json, state/
+#   $AGENTBELT_BIN  (default ~/.local/bin)                  thin wrappers
 #
 # The checkout is the source of truth; the installed copy additionally holds `state/`
 # (isolated homes, imported credentials, review baselines). This script never touches
@@ -15,11 +15,11 @@
 set -eu
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-TARGET="${AGENT_GUARD_ROOT:-$HOME/.local/share/agent-guard}"
-BIN="${AGENT_GUARD_BIN:-$HOME/.local/bin}"
+TARGET="${AGENTBELT_ROOT:-$HOME/.local/share/agentbelt}"
+BIN="${AGENTBELT_BIN:-$HOME/.local/bin}"
 
 if [ "$(uname -s)" != "Darwin" ]; then
-  echo "agent-guard requires macOS Seatbelt (sandbox-exec); no other platform is supported." >&2
+  echo "agentbelt requires macOS Seatbelt (sandbox-exec); no other platform is supported." >&2
   exit 1
 fi
 
@@ -44,10 +44,10 @@ publish() {
 }
 
 # Refuse an installation root inside a folder the operator might open as a workspace: the confined
-# child could then replace the supervisor. agent_guard.py also refuses such workspaces at launch.
+# child could then replace the supervisor. agentbelt.py also refuses such workspaces at launch.
 case "$TARGET" in
   "$HOME"|"$HOME/Desktop"*|"$HOME/Documents"*|"$HOME/Developer"*|"$HOME/Projects"*|"$HOME/src"*)
-    fail "AGENT_GUARD_ROOT must not be inside a project folder (got $TARGET); use the default or a hidden path such as ~/.local/share/agent-guard" ;;
+    fail "AGENTBELT_ROOT must not be inside a project folder (got $TARGET); use the default or a hidden path such as ~/.local/share/agentbelt" ;;
 esac
 
 umask 077
@@ -59,7 +59,7 @@ ensure_dir "$BIN"
 for file in "$REPO"/*.py "$REPO"/*.mjs "$REPO"/*.cjs "$REPO"/*.swift "$REPO"/LICENSE; do
   publish "$file" "$TARGET/$(basename "$file")" 600
 done
-chmod 700 "$TARGET/agent_guard.py"
+chmod 700 "$TARGET/agentbelt.py"
 for file in "$REPO"/tests/*.py; do publish "$file" "$TARGET/tests/$(basename "$file")" 600; done
 for file in "$REPO"/adapters/*.py; do publish "$file" "$TARGET/adapters/$(basename "$file")" 600; done
 publish "$REPO/native/SafeIcon.icns" "$TARGET/native/SafeIcon.icns" 600
@@ -72,8 +72,8 @@ rsync -a --no-links --exclude __pycache__ "$REPO/vendor/" "$TARGET/vendor/"
 #    `nvm install` or `brew upgrade` cannot silently change which binary runs the trusted supervisor.
 if [ -L "$TARGET/config.json" ]; then fail "refusing symlinked config.json"; fi
 if [ ! -e "$TARGET/config.json" ]; then
-  NODE_BIN="${AGENT_GUARD_NODE:-$(command -v node || true)}"
-  if [ -z "$NODE_BIN" ]; then fail "no node binary found; install Node 22+ or set AGENT_GUARD_NODE"; fi
+  NODE_BIN="${AGENTBELT_NODE:-$(command -v node || true)}"
+  if [ -z "$NODE_BIN" ]; then fail "no node binary found; install Node 22+ or set AGENTBELT_NODE"; fi
   # Record the resolved file, not a Homebrew/nvm alias symlink.
   NODE_BIN="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$NODE_BIN")"
   NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
@@ -90,33 +90,33 @@ NODE_BIN="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[
 # 4. Native Zcode Safe launcher (optional; only needed for the Zcode desktop integration).
 if command -v swiftc >/dev/null 2>&1; then
   ( cd "$TARGET" && swiftc -O -framework AppKit ZcodeSafe.swift -o "native/ZcodeSafeLauncher.tmp.$$" 2>/dev/null \
-      && codesign -s - -i local.agentguard.zcode.safe-launcher -f "native/ZcodeSafeLauncher.tmp.$$" >/dev/null 2>&1 \
+      && codesign -s - -i local.agentbelt.zcode.safe-launcher -f "native/ZcodeSafeLauncher.tmp.$$" >/dev/null 2>&1 \
       && chmod 700 "native/ZcodeSafeLauncher.tmp.$$" && mv -f "native/ZcodeSafeLauncher.tmp.$$" native/ZcodeSafeLauncher ) \
     || echo "note: ZcodeSafe launcher was not built (swiftc failed); Zcode Safe.app is unavailable." >&2
 fi
 
 # 5. Wrappers. `-I` keeps the supervisor free of PYTHONPATH/site customisation. The script path is
 #    single-quoted so an installation root containing spaces or metacharacters still works.
-QUOTED_SCRIPT="$(printf '%s' "$TARGET/agent_guard.py" | sed "s/'/'\\\\''/g")"
+QUOTED_SCRIPT="$(printf '%s' "$TARGET/agentbelt.py" | sed "s/'/'\\\\''/g")"
 write_wrapper() {
   if [ -L "$BIN/$1" ]; then fail "refusing to replace symlinked wrapper: $BIN/$1"; fi
   tmp="$BIN/$1.tmp.$$"
   printf '#!/bin/sh\nexec /usr/bin/python3 -I '"'"'%s'"'"' %s "$@"\n' "$QUOTED_SCRIPT" "$2" > "$tmp"
   chmod 700 "$tmp"; mv -f "$tmp" "$BIN/$1"
 }
-write_wrapper agent-guard ""
+write_wrapper agentbelt ""
 write_wrapper safecode "safecode --"
 write_wrapper opencode-safe "opencode"
 write_wrapper safekimi "kimi --"
 write_wrapper token-usage "usage"
 
 cat <<EOF
-agent-guard installed to $TARGET
+agentbelt installed to $TARGET
   node:      $NODE_BIN
-  wrappers:  $BIN/{agent-guard,safecode,opencode-safe,safekimi,token-usage}
+  wrappers:  $BIN/{agentbelt,safecode,opencode-safe,safekimi,token-usage}
 Next steps:
-  1. agent-guard init                         # create state for the agents that are installed, record baselines
-  2. agent-guard doctor                       # verify runtime, baselines, integrations
+  1. agentbelt init                         # create state for the agents that are installed, record baselines
+  2. agentbelt doctor                       # verify runtime, baselines, integrations
   3. /usr/bin/python3 "$TARGET/adapters/configure_existing.py" --authorized-live-settings   # import OpenCode credentials
   4. cd <project> && safecode                 # or safekimi
 Run the test suite from $TARGET: /usr/bin/python3 -m unittest discover -s tests

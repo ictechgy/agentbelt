@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 from adapters import kimi_cli
 
 # A probe that reads NSPasteboard directly. On the host it must yield real values, and inside the sandbox 0/0/0.
@@ -129,7 +129,7 @@ setTimeout(() => { console.log("DIR_CTOR " + d.constructor.name + " FILE_EVENTS 
                     status, stderr = confined_with_piped_stderr(
                         work, [str(g.NODE), str(work / 'probe.js'), str(work), str(work / 'target.txt')], out,
                         extra_reads=[kimi_cli.WATCH_BOOTSTRAP],
-                        extra_env={'NODE_OPTIONS': '--require ' + str(kimi_cli.WATCH_BOOTSTRAP), 'AGENT_GUARD_KIMI_BINARY': binary})
+                        extra_env={'NODE_OPTIONS': '--require ' + str(kimi_cli.WATCH_BOOTSTRAP), 'AGENTBELT_KIMI_BINARY': binary})
                     out.seek(0)
                     text = out.read().decode(errors='replace')
             self.assertEqual(status, 0, label + ': ' + text + stderr)
@@ -189,7 +189,7 @@ class ProfileTests(unittest.TestCase):
     def test_environment_disables_telemetry_updates_and_pins_the_kimi_home(self):
         env = kimi_cli.kimi_environment(Path('/tmp/synthetic-home'), Path('/tmp/staged/kimi'))
         self.assertEqual(env['KIMI_CODE_HOME'], '/tmp/synthetic-home/.kimi-code')
-        self.assertEqual(env['AGENT_GUARD_KIMI_BINARY'], '/tmp/staged/kimi')
+        self.assertEqual(env['AGENTBELT_KIMI_BINARY'], '/tmp/staged/kimi')
         self.assertEqual(env['KIMI_DISABLE_TELEMETRY'], '1')
         self.assertEqual(env['KIMI_CODE_NO_AUTO_UPDATE'], '1')
         self.assertEqual(env['KIMI_CLI_NO_AUTO_UPDATE'], '1')
@@ -333,7 +333,7 @@ class WiringTests(unittest.TestCase):
             env = {}
             call['prepare_home'](Path(tmp), env)
         self.assertEqual(env['KIMI_CODE_HOME'], tmp + '/.kimi-code')
-        self.assertEqual(env['AGENT_GUARD_KIMI_BINARY'], str(self.staged))
+        self.assertEqual(env['AGENTBELT_KIMI_BINARY'], str(self.staged))
         self.assertEqual(env['KIMI_DISABLE_TELEMETRY'], '1')
         self.assertEqual(env['CHOKIDAR_USEPOLLING'], '1')
         self.assertEqual(env['NODE_OPTIONS'], '--require ' + str(kimi_cli.WATCH_BOOTSTRAP))
@@ -441,17 +441,17 @@ class PublicationHardeningTests(unittest.TestCase):
                     g.workspace_path(base / 'tools')  # contains the trusted node binary
 
     def test_node_discovery_never_raises_on_unreadable_paths(self):
-        """The hook imports agent_guard inside the sandbox; a PermissionError at import would deny every tool call."""
+        """The hook imports agentbelt inside the sandbox; a PermissionError at import would deny every tool call."""
         with patch.object(g.Path, 'is_file', side_effect=PermissionError('denied')), \
              patch.object(g.Path, 'glob', side_effect=PermissionError('denied')):
             self.assertTrue(str(g.newest_nvm_node(Path('/nonexistent-home'))).endswith('/bin/node'))
 
     def test_short_temp_directory_falls_back_when_the_install_path_is_long(self):
-        with tempfile.TemporaryDirectory(prefix='very-long-install-root-name-for-agent-guard-', dir=Path.home()) as tmp:
+        with tempfile.TemporaryDirectory(prefix='very-long-install-root-name-for-agentbelt-', dir=Path.home()) as tmp:
             with patch.object(g, 'ROOT', Path(tmp)):
                 directory = g.short_temp_directory('autoclaw', Path('/tmp/w'))
         self.assertLessEqual(len(str(directory).encode()), 57)
-        self.assertTrue(str(directory).startswith('/private/tmp/agent-guard-' + str(os.getuid()) + '/'))
+        self.assertTrue(str(directory).startswith('/private/tmp/agentbelt-' + str(os.getuid()) + '/'))
         self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
         shutil.rmtree(directory, ignore_errors=True)
 
@@ -461,7 +461,7 @@ class PublicationHardeningTests(unittest.TestCase):
              patch.object(g, 'packet_ask_pinned_version', lambda: '9.9.9'), \
              patch('sys.stdout', new_callable=io.StringIO):
             g.packet_provider_status(['doctor'])
-        self.assertEqual(seen['extra_env']['AGENT_GUARD_PACKET_ASK_VERSION'], '9.9.9')
+        self.assertEqual(seen['extra_env']['AGENTBELT_PACKET_ASK_VERSION'], '9.9.9')
 
 
 class HomebrewDataBoundaryTests(unittest.TestCase):
@@ -528,7 +528,7 @@ class LaunchSmokeTests(unittest.TestCase):
         require_installed_kimi()
         with tempfile.TemporaryDirectory(prefix='kimi-tui-', dir=Path.home()) as tmp:
             work = Path(tmp)
-            runner = ('import sys; sys.path.insert(0, sys.argv[1]); import agent_guard as g; from adapters import kimi_cli; from pathlib import Path; '
+            runner = ('import sys; sys.path.insert(0, sys.argv[1]); import agentbelt as g; from adapters import kimi_cli; from pathlib import Path; '
                       'w = Path(sys.argv[2]); sys.exit(g.run_confined("kimi-test", w, [str(g.KIMI)], domains=[], ephemeral=True, '
                       'extra_reads=[g.KIMI, kimi_cli.WATCH_BOOTSTRAP], prepare_home=kimi_cli.prepare_kimi_home("global", g.KIMI), '
                       'read_only_home_paths=[kimi_cli.REGION_MARKER_RELATIVE]))')

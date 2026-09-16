@@ -2,7 +2,7 @@
 
 ## One launch, end to end
 
-1. A wrapper (`safecode`, `safekimi`, ...) runs `/usr/bin/python3 -I agent_guard.py <mode> ...`.
+1. A wrapper (`safecode`, `safekimi`, ...) runs `/usr/bin/python3 -I agentbelt.py <mode> ...`.
    `-I` ignores `PYTHON*` variables and user site-packages, so the supervisor's imports are its own.
 2. `workspace_path()` resolves the project directory and refuses the home itself, hidden
    directories, personal folders, and any tree that contains hard links pointing outside it.
@@ -29,7 +29,7 @@
 
 ## Invariants worth keeping
 
-- **`agent_guard.py` must not import sibling modules at top level.** `zcode_hook.py` imports it from
+- **`agentbelt.py` must not import sibling modules at top level.** `zcode_hook.py` imports it from
   inside the sandbox; any import failure there is translated into a `deny` decision, so a new
   top-level import that is unreadable inside the sandbox silently denies every tool call.
   Host-only modules live in `adapters/` and are imported lazily inside `main()` / `run_confined()`;
@@ -55,7 +55,7 @@
 
 ## Bootstrap of a fresh installation
 
-`install.sh` copies code, pins Node and builds the launcher. `agent-guard init` then creates the state a fresh
+`install.sh` copies code, pins Node and builds the launcher. `agentbelt init` then creates the state a fresh
 machine lacks, and only what is missing: the reviewed package-registry list (`state/development.json`), an
 example riskgate policy when the operator has none, Zcode profiles and the Safe app when Zcode is installed,
 the packet-ask version gate when packet-ask is installed, and a hash baseline for every installed agent.

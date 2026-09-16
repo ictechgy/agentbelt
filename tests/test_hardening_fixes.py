@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import agent_guard as g
+import agentbelt as g
 
 
 class HookImportFailureTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class HookImportFailureTests(unittest.TestCase):
             work.mkdir()
             # The vendored riskgate package is deliberately absent, so the bridge
             # import chain fails the way a broken installation would.
-            for name in ['zcode_hook.py', 'agent_guard.py', 'riskgate_bridge.py']:
+            for name in ['zcode_hook.py', 'agentbelt.py', 'riskgate_bridge.py']:
                 shutil.copy(ROOT / name, base)
             payload = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
                                   'cwd': str(work), 'tool_input': {'command': 'printf synthetic'}})

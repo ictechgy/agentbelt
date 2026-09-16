@@ -346,7 +346,7 @@ def clean_environment(home, github=None):
     for descriptor in (0, 1, 2):
         if os.isatty(descriptor):
             terminals.add(os.ttyname(descriptor))
-    env['AGENT_GUARD_TTY_PATHS'] = json.dumps(sorted(terminals))
+    env['AGENTBELT_TTY_PATHS'] = json.dumps(sorted(terminals))
     return env
 
 
@@ -487,7 +487,7 @@ def short_temp_directory(mode, workspace):
     if len(str(directory).encode()) > 57:
         # The install path depends on the account name; a ten-character name already overflows. Fall back to a short
         # guard-owned root under /private/tmp. private_dir refuses a directory another user pre-created (owner check).
-        directory = private_dir(Path('/private/tmp') / ('agent-guard-' + str(os.getuid()))) / identity
+        directory = private_dir(Path('/private/tmp') / ('agentbelt-' + str(os.getuid()))) / identity
         if len(str(directory).encode()) > 57:
             raise GuardError('No temporary directory short enough for a unix socket path is available.')
     return private_dir(directory)
@@ -535,9 +535,9 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         if loopback_port:
             # One dedicated loopback port per agent session. Tools that really need a local port, such as the VM service
             # of dart coverage, use this port instead of a random one. Random binds stay blocked.
-            env['AGENT_GUARD_LOOPBACK_PORT'] = str(free_loopback_port())
-            dev_ports.append(int(env['AGENT_GUARD_LOOPBACK_PORT']))
-        env['AGENT_GUARD_DEV_PORTS'] = json.dumps(sorted(set(dev_ports)))
+            env['AGENTBELT_LOOPBACK_PORT'] = str(free_loopback_port())
+            dev_ports.append(int(env['AGENTBELT_LOOPBACK_PORT']))
+        env['AGENTBELT_DEV_PORTS'] = json.dumps(sorted(set(dev_ports)))
         if prepare_home:
             prepare_home(home, env)
         configuration_home = None
@@ -570,13 +570,13 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
                 hardlink_credential(source, Path(env['XDG_CONFIG_HOME']) / relative)
         if loopback_all:
             # Per-workspace opt-in: opens bind, listen and self-connect on arbitrary loopback ports (for JVM builds).
-            env['AGENT_GUARD_LOOPBACK_ALL'] = '1'
+            env['AGENTBELT_LOOPBACK_ALL'] = '1'
         if allow_gradle_keystore:
             # Per-workspace opt-in: only the file name `gradle.keystore` is exempt from the secret deny (Gradle TestKit and
             # config-cache false positives). sandbox_runner appends a rule re-allowing just that file name after the SRT
             # rules (the last SBPL match wins). denyWrite beats allowWrite, so the policy cannot open it and only this
             # append gets through. Other keystores stay denied.
-            env['AGENT_GUARD_GRADLE_KEYSTORE_ROOT'] = str(Path(workspace).resolve())
+            env['AGENTBELT_GRADLE_KEYSTORE_ROOT'] = str(Path(workspace).resolve())
         policy = sandbox_policy(workspace, home, domains, extra_reads)
         if loopback_all:
             policy['network']['allowLocalBinding'] = True
@@ -652,7 +652,7 @@ def verify_opencode_binary():
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     if digest.hexdigest() != baseline['sha256']:
-        raise GuardError('OpenCode changed; run agent-guard verify-updates before using safecode.')
+        raise GuardError('OpenCode changed; run agentbelt verify-updates before using safecode.')
     return baseline['version']
 
 
@@ -660,15 +660,15 @@ def verify_kimi_binary():
     """Returns the version only when the Kimi Code binary matches the reviewed hash. Without a baseline it closes.
 
     Why a hash. `~/.kimi-code/bin/kimi` is subject to auto-update, so its contents can change. A changed binary may behave
-    differently around the clipboard and the network, so it is launched only after `agent-guard verify-updates` has
+    differently around the clipboard and the network, so it is launched only after `agentbelt verify-updates` has
     reviewed it again.
     """
     manifest = compatibility_manifest()
     if not manifest.is_file():
-        raise GuardError('Kimi Code compatibility baseline is missing; run agent-guard verify-updates before use.')
+        raise GuardError('Kimi Code compatibility baseline is missing; run agentbelt verify-updates before use.')
     baseline = json.loads(manifest.read_text()).get('kimi')
     if not isinstance(baseline, dict) or not isinstance(baseline.get('sha256'), str):
-        raise GuardError('Kimi Code compatibility baseline has no kimi entry; run agent-guard verify-updates before use.')
+        raise GuardError('Kimi Code compatibility baseline has no kimi entry; run agentbelt verify-updates before use.')
     if not KIMI.is_file():
         raise GuardError('Kimi Code is not installed at ' + str(KIMI) + '.')
     digest = hashlib.sha256()
@@ -676,7 +676,7 @@ def verify_kimi_binary():
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
     if digest.hexdigest() != baseline['sha256']:
-        raise GuardError('Kimi Code changed; run agent-guard verify-updates before using safekimi.')
+        raise GuardError('Kimi Code changed; run agentbelt verify-updates before using safekimi.')
     return baseline.get('version')
 
 
@@ -701,7 +701,7 @@ def verify_zcode_binary():
             for block in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(block)
         if digest.hexdigest() != baseline[field]:
-            raise GuardError('Zcode changed; run agent-guard verify-updates before starting a new backend.')
+            raise GuardError('Zcode changed; run agentbelt verify-updates before starting a new backend.')
 
 
 def autoclaw_profile():
@@ -750,7 +750,7 @@ def verify_autoclaw_binary():
         raise GuardError('AutoClaw manifest names a different Zcode binary; re-verify before launching.')
     digest = file_sha256(autoclaw_bundled_binary())
     if digest != baseline['zcodeSha256'] or digest != artifact.get('sha256'):
-        raise GuardError('AutoClaw Zcode CLI changed; run agent-guard verify-updates before starting a new backend.')
+        raise GuardError('AutoClaw Zcode CLI changed; run agentbelt verify-updates before starting a new backend.')
     return cli_version
 
 
@@ -781,7 +781,7 @@ def stage_autoclaw_binary():
         raise GuardError('Could not stage the AutoClaw Zcode CLI for a guarded launch.')
     if file_sha256(staged) != baseline.get('zcodeSha256'):
         shutil.rmtree(directory, ignore_errors=True)
-        raise GuardError('AutoClaw Zcode CLI changed while staging; run agent-guard verify-updates before launching.')
+        raise GuardError('AutoClaw Zcode CLI changed while staging; run agentbelt verify-updates before launching.')
     staged.chmod(0o500)
     return staged
 
@@ -821,7 +821,7 @@ def stage_kimi_binary():
         raise GuardError('Could not stage the Kimi Code binary for a guarded launch.')
     if file_sha256(staged) != baseline.get('sha256'):
         shutil.rmtree(directory, ignore_errors=True)
-        raise GuardError('Kimi Code changed while staging; run agent-guard verify-updates before launching.')
+        raise GuardError('Kimi Code changed while staging; run agentbelt verify-updates before launching.')
     staged.chmod(0o500)
     return staged
 
@@ -960,7 +960,7 @@ def doctor():
 
 
 # Package registries a session may reach when `state/development.json` lists them. This is the reviewed maximum;
-# `agent-guard init` writes it as the default. Anything outside is refused even if configured.
+# `agentbelt init` writes it as the default. Anything outside is refused even if configured.
 PUBLIC_PACKAGE_DOMAINS = frozenset({
     'registry.npmjs.org:443', 'pypi.org:443', 'files.pythonhosted.org:443',
     'github.com:443', 'codeload.github.com:443', 'api.github.com:443',
@@ -1195,7 +1195,7 @@ def load_opencode_profile():
 
 def inside_zcode_sandbox():
     """A trusted marker plus an actual denied open of our NON-secret canary file."""
-    if os.environ.get('AGENT_GUARD_BACKEND') != 'zcode-v1':
+    if os.environ.get('AGENTBELT_BACKEND') != 'zcode-v1':
         return False
     try:
         descriptor = os.open(str(ROOT / 'state/original-permissions.json'), os.O_RDONLY)
@@ -1225,7 +1225,7 @@ def live_zcode_status():
         if pid not in family or name not in {'Python', 'python3'}:
             continue
         command = subprocess.run(['/bin/ps', '-ww', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout
-        if str(ROOT / 'agent_guard.py') + ' zcode-backend' in command:
+        if str(ROOT / 'agentbelt.py') + ' zcode-backend' in command:
             guards.add(pid)
     protected = set(guards)
     for _ in range(12):
@@ -1281,7 +1281,7 @@ def github_token_path():
 def setup_github_token():
     """Read a scoped token from the operator's terminal, never from a chat."""
     if not sys.stdin.isatty() or not sys.stderr.isatty():
-        raise GuardError('Run agent-guard setup-github-token in macOS Terminal. '
+        raise GuardError('Run agentbelt setup-github-token in macOS Terminal. '
                          'Never paste the token into the agent chat.')
     import getpass
     token = getpass.getpass('GitHub fine-grained token (input is not displayed): ').strip()
@@ -1334,7 +1334,7 @@ def packet_provider_status(arguments):
                               [str(PACKET_PYTHON), '-I', str(ROOT / 'packet_entry.py'), 'doctor'],
                               extra_env={'PACKET_ASK_CLAUDE_BIN': str(CLAUDE.resolve()),
                                          # The entry point closes without the reviewed version (same gate as real requests).
-                                         'AGENT_GUARD_PACKET_ASK_VERSION': packet_ask_pinned_version()},
+                                         'AGENTBELT_PACKET_ASK_VERSION': packet_ask_pinned_version()},
                               ephemeral=True, stdout=output)
         output.seek(0)
         lines = output.read(1024 * 1024).decode(errors='replace').splitlines()
@@ -1368,7 +1368,7 @@ def read_packet_glm_keychain():
 def prepare_packet_request(arguments, use_keychain=False):
     # The adapter (packet_entry.py) does not read the file inside the sandbox; it compares this value with the installation.
     env = {'PACKET_ASK_CLAUDE_BIN': str(CLAUDE.resolve()),
-           'AGENT_GUARD_PACKET_ASK_VERSION': packet_ask_pinned_version()}
+           'AGENTBELT_PACKET_ASK_VERSION': packet_ask_pinned_version()}
     if arguments[0] in {'inspect', 'providers', 'doctor'}:
         return arguments, [], env
     if arguments[0] not in {'review', 'research'}:
@@ -1491,12 +1491,12 @@ def run_autoclaw_backend(remaining):
             relay.prepare(home, env)
         # The bundled CLI looks for its configuration relative to HOME. ZCODE_HOME is for consistency with zcode-backend.
         env.update({'ZCODE_HOME': str(home / '.zcode'),
-                    'AGENT_GUARD_BACKEND': 'zcode-v1', 'AGENT_GUARD_BOOTSTRAP': 'zcode',
-                    'AGENT_GUARD_PROMPT_TELEMETRY': '1' if prompt_telemetry_enabled() else '0'})
+                    'AGENTBELT_BACKEND': 'zcode-v1', 'AGENTBELT_BOOTSTRAP': 'zcode',
+                    'AGENTBELT_PROMPT_TELEMETRY': '1' if prompt_telemetry_enabled() else '0'})
     # Only the single binary that the guard cloned and verified is readable, not the whole app directory.
     staged = stage_autoclaw_binary()
     stage('staged')
-    reads = [staged, ROOT / 'agent_guard.py', ROOT / 'zcode_hook.py', base_config,
+    reads = [staged, ROOT / 'agentbelt.py', ROOT / 'zcode_hook.py', base_config,
              ROOT / 'riskgate_bridge.py', ROOT / 'vendor', ROOT / 'state/riskgate.json', riskgate]
     workspace_id = hashlib.sha256(str(workspace).encode()).hexdigest()[:20]
 
@@ -1507,7 +1507,7 @@ def run_autoclaw_backend(remaining):
         try:
             status = run_confined('autoclaw', workspace, [str(staged), 'agent-server'],
                                   sorted(set(domains + development['packageDomains'])),
-                                  extra_env={'AGENT_GUARD_BROKER_PORT': str(broker_port)},
+                                  extra_env={'AGENTBELT_BROKER_PORT': str(broker_port)},
                                   extra_reads=reads, prepare_home=prepare_autoclaw, private_sockets=True,
                                   read_only_home_paths=['.zcode/cli/config.json'] + (relay.read_only_home_paths() if relay else []),
                                   dev_ports=development['devPorts'], instruction_files=['.zcode/AGENTS.md'],
@@ -1642,7 +1642,7 @@ def main(argv=None):
     if remaining[:1] == ['--']:
         remaining = remaining[1:]
     if args.mode == 'usage':
-        # Host-only module. The hook inside the sandbox imports agent_guard, so it is read only here.
+        # Host-only module. The hook inside the sandbox imports agentbelt, so it is read only here.
         sys.path.insert(0, str(ROOT))
         from adapters import usage_cli
         return usage_cli.run_usage(remaining)
@@ -1710,10 +1710,10 @@ def main(argv=None):
         with StatusBroker(coordinates) as broker:
             if relay is None:
                 return launch(dict(broker.child_environment(),
-                                   AGENT_GUARD_BROKER_PORT=str(broker.port)), [plugin])
+                                   AGENTBELT_BROKER_PORT=str(broker.port)), [plugin])
             with relay:
                 return launch(dict(broker.child_environment(),
-                                   AGENT_GUARD_BROKER_PORT=str(broker.port)), [plugin])
+                                   AGENTBELT_BROKER_PORT=str(broker.port)), [plugin])
     if args.mode == 'zcode-backend':
         verify_zcode_binary()
         development = development_options()
@@ -1737,12 +1737,12 @@ def main(argv=None):
             if relay is not None:
                 relay.prepare(home, env)
             env.update({'ZCODE_HOME': str(private_dir(home / '.zcode')),
-                        'AGENT_GUARD_BACKEND': 'zcode-v1', 'AGENT_GUARD_BOOTSTRAP': 'zcode',
-                        'AGENT_GUARD_PROMPT_TELEMETRY': '1' if prompt_telemetry_enabled() else '0',
+                        'AGENTBELT_BACKEND': 'zcode-v1', 'AGENTBELT_BOOTSTRAP': 'zcode',
+                        'AGENTBELT_PROMPT_TELEMETRY': '1' if prompt_telemetry_enabled() else '0',
                         # Providers built on Node's global fetch ignore the agent's own
                         # proxy settings and resolve DNS directly, which cannot work here.
                         'NODE_OPTIONS': '--import ' + (ROOT / 'proxy_bootstrap.mjs').as_uri()})
-        reads = ['/Applications/ZCode.app', ROOT / 'agent_guard.py', ROOT / 'zcode_hook.py',
+        reads = ['/Applications/ZCode.app', ROOT / 'agentbelt.py', ROOT / 'zcode_hook.py',
                  base_config, ROOT / 'riskgate_bridge.py', ROOT / 'vendor', ROOT / 'state/riskgate.json', riskgate,
                  ROOT / 'proxy_bootstrap.mjs', ROOT / 'runtime/node_modules/undici']
         def launch_zcode():
@@ -1782,5 +1782,5 @@ if __name__ == '__main__':
     except Exception as error:
         # Exception values from config/providers might contain credentials.
         message = str(error) if isinstance(error, GuardError) else 'Local setup failed; no provider was launched.'
-        print('agent-guard: ' + message, file=sys.stderr)
+        print('agentbelt: ' + message, file=sys.stderr)
         raise SystemExit(2)

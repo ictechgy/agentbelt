@@ -41,7 +41,7 @@ print('GUARD_TTY_RESULT='+json.dumps(result),flush=True)
                 os.close(other_master)
                 os.close(other_slave)
                 os.chdir(work)
-                os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', str(ROOT / 'agent_guard.py'),
+                os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', str(ROOT / 'agentbelt.py'),
                          'exec', work, '--', '/usr/bin/python3', '-I', '-c', code, other_path])
             output = bytearray()
             status = None

@@ -291,7 +291,7 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn('command', captured)
 
     def test_agent_server_records_each_stage_before_the_sandbox_starts(self):
-        """If it does not come up within the handshake limit, it must be possible to tell which stage it stopped at (the isthmus 30-second silence incident).
+        """If it does not come up within the handshake limit, it must be possible to tell which stage it stopped at (the 30-second channel silence incident).
         `python-start` is left before argparse to separate the launcher shell's `sh-start` from `started` (the shuttle and interpreter startup)."""
         import argparse
         stages = []
@@ -670,7 +670,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(victim.read_text(), 'keep')
 
     def test_launcher_logs_a_shell_stage_before_handing_over_to_python(self):
-        """The isthmus 30-second silence: the launcher started by the gateway did not even reach the first line of Python. The shell itself must
+        """The 30-second channel silence incident: the launcher started by the gateway did not even reach the first line of Python. The shell itself must
         leave the first evidence so we can tell whether it stopped at shell startup, the python3 shuttle or Python startup. The pid carries
         through exec, so it is the same as the Python pid."""
         import subprocess

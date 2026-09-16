@@ -84,7 +84,13 @@ class RenderTests(unittest.TestCase):
         """A session misdiagnosed this as a 'broken Swift toolchain'. It was really the module cache, the nested sandbox and the *.db rule."""
         self.assertIn('swift build --build-system native --disable-sandbox --scratch-path "$TMPDIR/swiftpm-build"', self.text)
         self.assertIn('not supported by the compiler', self.text)
-        self.assertIn('cartograph-index-db', self.text)
+        # The granted temp folders are taken from the policy, never hardcoded.
+        from unittest.mock import patch
+        with patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': [], 'darwinTempDirectories': ['probe-index-db']}):
+            policy = g.sandbox_policy(self.workspace, self.home, [])
+        self.assertIn('`probe-index-db`', notice.render_environment_notice(self.workspace, self.home, self.env, policy))
+        stripped = dict(self.policy, filesystem=dict(self.policy['filesystem'], allowRead=[p for p in self.policy['filesystem']['allowRead'] if '/T/' not in p]))
+        self.assertIn('(none granted)', notice.render_environment_notice(self.workspace, self.home, self.env, stripped))
 
     def test_warns_against_repairing_the_host(self):
         self.assertIn('sudo', self.text)

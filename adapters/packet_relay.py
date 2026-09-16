@@ -46,7 +46,7 @@ while [ "$waited" -lt 1200 ]; do
 done
 echo "packet-promote: timed out" >&2; exit 124
 '''
-# timeoutSeconds: 30 minutes, matching the measurement where the qwen reviewer took more than 9 minutes on a large repository (cartograph, 50,000 files).
+# timeoutSeconds: 30 minutes, matching the measurement where the qwen reviewer took more than 9 minutes on a large repository .
 DEFAULT_SETTINGS = {'maxPerHour': 6, 'maxQuestionBytes': 16384, 'maxFiles': 40, 'pollSeconds': 1.0, 'timeoutSeconds': 1800}
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 # glm: packet-ask (a scrubbed packet). qwen: a read-only OpenCode agent inside the guard sandbox reads the files itself.

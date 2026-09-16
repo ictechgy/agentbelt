@@ -45,7 +45,7 @@ def launcher_exec_line():
 def launcher_text():
     """The launcher body. For an `agent-server` call the shell records `sh-start` before Python is reached.
 
-    In the isthmus channel incident the launcher started by the gateway never reached even Python's first line
+    In one Discord channel incident the launcher started by the gateway never reached even Python's first line
     (`started`), while every reproduction on the supervisor side was normal. Only when the shell itself leaves evidence
     can we tell whether it stopped during shell startup, the python3 shuttle or Python startup. The pid carries through
     exec, so it is the same pid as the Python stage. A failed record does not block execution. If the log slot or

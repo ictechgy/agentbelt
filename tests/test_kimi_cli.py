@@ -423,6 +423,47 @@ def require_installed_kimi():
         raise unittest.SkipTest('Kimi Code is not installed')
 
 
+class PublicationHardeningTests(unittest.TestCase):
+    """Pre-publication review (2026-09-16): defenses that only matter once other people install the guard."""
+
+    def test_workspace_may_not_contain_the_installation_or_trusted_executables(self):
+        with tempfile.TemporaryDirectory(prefix='overlap-', dir=Path.home()) as tmp:
+            base = Path(tmp)
+            (base / 'guard').mkdir(); (base / 'project').mkdir(); (base / 'tools/bin').mkdir(parents=True)
+            with patch.object(g, 'ROOT', base / 'guard'):
+                with self.assertRaises(g.GuardError):
+                    g.workspace_path(base)  # contains the installation
+                with self.assertRaises(g.GuardError):
+                    g.workspace_path(base / 'guard')  # is the installation
+                self.assertEqual(g.workspace_path(base / 'project'), base / 'project')
+            with patch.object(g, 'NODE', base / 'tools/bin/node'):
+                with self.assertRaises(g.GuardError):
+                    g.workspace_path(base / 'tools')  # contains the trusted node binary
+
+    def test_node_discovery_never_raises_on_unreadable_paths(self):
+        """The hook imports agent_guard inside the sandbox; a PermissionError at import would deny every tool call."""
+        with patch.object(g.Path, 'is_file', side_effect=PermissionError('denied')), \
+             patch.object(g.Path, 'glob', side_effect=PermissionError('denied')):
+            self.assertTrue(str(g.newest_nvm_node(Path('/nonexistent-home'))).endswith('/bin/node'))
+
+    def test_short_temp_directory_falls_back_when_the_install_path_is_long(self):
+        with tempfile.TemporaryDirectory(prefix='very-long-install-root-name-for-agent-guard-', dir=Path.home()) as tmp:
+            with patch.object(g, 'ROOT', Path(tmp)):
+                directory = g.short_temp_directory('autoclaw', Path('/tmp/w'))
+        self.assertLessEqual(len(str(directory).encode()), 57)
+        self.assertTrue(str(directory).startswith('/private/tmp/agent-guard-' + str(os.getuid()) + '/'))
+        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        shutil.rmtree(directory, ignore_errors=True)
+
+    def test_packet_doctor_passes_the_reviewed_version_to_the_entry_point(self):
+        seen = {}
+        with patch.object(g, 'run_confined', lambda *a, **k: seen.update(k) or 0), \
+             patch.object(g, 'packet_ask_pinned_version', lambda: '9.9.9'), \
+             patch('sys.stdout', new_callable=io.StringIO):
+            g.packet_provider_status(['doctor'])
+        self.assertEqual(seen['extra_env']['AGENT_GUARD_PACKET_ASK_VERSION'], '9.9.9')
+
+
 class HomebrewDataBoundaryTests(unittest.TestCase):
     """Homebrew tools are visible, but service data (`/opt/homebrew/var`) is not readable in any mode (2026-09-16 review HIGH)."""
 

@@ -5,6 +5,7 @@ import copy
 import fcntl
 import json
 import os
+import sys
 import pwd
 from pathlib import Path
 import re
@@ -292,6 +293,13 @@ def publish_settings(updates):
                 temp.unlink()
 
 
+def opencode_binary():
+    """The OpenCode binary as resolved by agent_guard (config.json override included). Lazy import: host-only path."""
+    sys.path.insert(0, str(ROOT))
+    import agent_guard
+    return agent_guard.OPENCODE
+
+
 def import_settings():
     # No shell startup files are evaluated. Only these explicitly named stores are read.
     auth_file = HOME / '.local/share/opencode/auth.json'
@@ -301,7 +309,7 @@ def import_settings():
     source = parse_jsonc(opencode_file.read_text())
     original_zcode = json.loads(zcode_file.read_text())
     config, scoped_auth, profile = opencode_assets(auth, source,
-        embedded_endpoints((HOME / '.opencode/bin/opencode').read_bytes()))
+        embedded_endpoints(opencode_binary().read_bytes()))
     updated_zcode = add_zcode_hook(original_zcode)
     state = ROOT / 'state'
     backups = state / 'backups'

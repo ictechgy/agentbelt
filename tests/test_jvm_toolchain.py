@@ -1,4 +1,4 @@
-"""Regression for the conditions that let a JVM/Gradle project (kartograph) build and test inside the isolation.
+"""Regression for the conditions that let a JVM/Gradle project build and test inside the isolation.
 
 Measured (2026-09-15): the JVM takes `user.home` from the account DB rather than $HOME, and `java.io.tmpdir` from the Darwin
 temporary directory rather than $TMPDIR, so it writes to closed paths in both cases. In Gradle the daemon, the file-lock handler,

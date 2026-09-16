@@ -39,16 +39,16 @@ class PolicyTests(unittest.TestCase):
 
 
 class DarwinTempDirectoryTests(unittest.TestCase):
-    """cartograph hardcodes two folders under NSTemporaryDirectory() and ignores TMPDIR."""
+    """Some tools hardcode folders under NSTemporaryDirectory() and ignore TMPDIR."""
 
     def test_configured_names_get_read_write_and_others_stay_closed(self):
         from unittest.mock import patch
         with patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': [],
-                                                              'darwinTempDirectories': ['cartograph-index-db']}):
+                                                              'darwinTempDirectories': ['tool-index-db']}):
             policy = g.sandbox_policy(Path('/tmp/x'), Path('/tmp/h'), [])
         base = os.path.dirname(g.darwin_temporary_items())
-        self.assertIn(base + '/cartograph-index-db', policy['filesystem']['allowRead'])
-        self.assertIn(base + '/cartograph-index-db', policy['filesystem']['allowWrite'])
+        self.assertIn(base + '/tool-index-db', policy['filesystem']['allowRead'])
+        self.assertIn(base + '/tool-index-db', policy['filesystem']['allowWrite'])
         self.assertNotIn(base, policy['filesystem']['allowRead'])
         self.assertNotIn(base, policy['filesystem']['allowWrite'])
 
@@ -59,23 +59,28 @@ class DarwinTempDirectoryTests(unittest.TestCase):
                 with self.assertRaises(g.GuardError, msg=bad):
                     g.sandbox_policy(Path('/tmp/x'), Path('/tmp/h'), [])
 
-    def test_state_file_opts_in_the_two_cartograph_directories(self):
-        options = g.development_options()
-        self.assertEqual(sorted(options.get('darwinTempDirectories', [])), ['cartograph-index-db', 'cartograph-syntax-cache'])
+    def test_sandbox_can_use_granted_temp_directories_but_not_siblings(self):
+        """The opt-in folder need not exist on the host: `T/` itself is closed, so the supervisor creates it before execution.
 
-    def test_sandbox_can_use_the_cartograph_directories_but_not_siblings(self):
-        """The opt-in folder need not exist on the host: `T/` itself is closed, so the supervisor creates it before execution."""
+        Uses names unique to this test run and removes only what it created, so the operator's real caches are untouched.
+        """
+        from unittest.mock import patch
         base = os.path.dirname(g.darwin_temporary_items())
         import shutil
-        for name in ('cartograph-index-db', 'cartograph-syntax-cache'):
-            shutil.rmtree(os.path.join(base, name), ignore_errors=True)
-        with tempfile.TemporaryDirectory(prefix='carto-tmp-', dir=Path.home()) as tmp:
-            status, text = confined(Path(tmp),
-                'd="' + base + '/cartograph-index-db/probe-$$"; mkdir -p "$d" && echo hi > "$d/f" && cat "$d/f" && rm -r "$d" && echo CARTO_RW_OK\n'
-                'mkdir "' + base + '/agent-guard-sibling-$$" 2>/dev/null && echo SIBLING_OPEN || echo SIBLING_BLOCKED\n'
-                'ls "' + base + '" >/dev/null 2>&1 && echo LIST_OPEN || echo LIST_BLOCKED\n')
+        names = ['agent-guard-test-' + os.urandom(3).hex() + suffix for suffix in ('-index', '-cache')]
+        options = dict(g.development_options(), darwinTempDirectories=names)
+        try:
+            with patch.object(g, 'development_options', lambda: options), \
+                 tempfile.TemporaryDirectory(prefix='temp-grant-', dir=Path.home()) as tmp:
+                status, text = confined(Path(tmp),
+                    'd="' + base + '/' + names[0] + '/probe-$$"; mkdir -p "$d" && echo hi > "$d/f" && cat "$d/f" && rm -r "$d" && echo GRANT_RW_OK\n'
+                    'mkdir "' + base + '/agent-guard-sibling-$$" 2>/dev/null && echo SIBLING_OPEN || echo SIBLING_BLOCKED\n'
+                    'ls "' + base + '" >/dev/null 2>&1 && echo LIST_OPEN || echo LIST_BLOCKED\n')
+        finally:
+            for name in names:
+                shutil.rmtree(os.path.join(base, name), ignore_errors=True)
         self.assertEqual(status, 0, text)
-        self.assertIn('CARTO_RW_OK', text)
+        self.assertIn('GRANT_RW_OK', text)
         self.assertIn('SIBLING_BLOCKED', text)
         self.assertIn('LIST_BLOCKED', text)
 

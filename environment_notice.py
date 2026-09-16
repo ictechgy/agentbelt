@@ -24,6 +24,31 @@ def _readable_roots(policy, workspace, home):
             if path not in skip and not path.startswith('/dev/') and not path.startswith('/private/')]
 
 
+def _jvm_domains_line(policy):
+    """State the JVM registry domains only when this installation actually allows them."""
+    domains = set(policy['network']['allowedDomains'])
+    if {'services.gradle.org:443', 'repo.maven.apache.org:443'} <= domains:
+        return ('- The Gradle distribution, Maven Central, the Plugin Portal, and Google Maven are allowed domains. '
+                'The first run takes a few minutes to download.\n')
+    return '- Gradle/Maven registry domains are not in the allow list of this session; dependency downloads will fail.\n'
+
+
+def _inline_names(values):
+    """Comma-separated backticked names for an inline sentence; '(none granted)' when empty."""
+    return ', '.join('`' + str(value) + '`' for value in values) if values else '(none granted)'
+
+
+def _darwin_temp_names(policy):
+    """Names of the opt-in subdirectories under NSTemporaryDirectory() taken from the policy, so the notice never
+    advertises a folder that this installation did not grant."""
+    names = []
+    for path in policy['filesystem']['allowRead']:
+        parts = Path(path).parts
+        if '/var/folders/' in path and len(parts) >= 2 and parts[-2] == 'T' and parts[-1] != 'TemporaryItems':
+            names.append(parts[-1])
+    return names
+
+
 def _data_home_line(home, env):
     """Report the location only when the HOME of the child differs from the persistent data home (OpenCode protected mode)."""
     if env.get('HOME', str(home)) == str(home):
@@ -117,7 +142,7 @@ Only the domains below are reachable, through the supervisor proxy. Anything out
   launches the linker-stage swiftc without TMPDIR and fails with `error: permissionDenied` while writing temporary files into the
   closed `/var/folders/.../T` (not a broken toolchain). Ignore deprecated warnings. If an index store is needed, use `-Xswiftc -index-store-path -Xswiftc "$TMPDIR/index"`.
 - `NSTemporaryDirectory()` (= `/var/folders/.../T/`) differs from TMPDIR and is blocked by default. Subfolders opened as exceptions:
-  `cartograph-index-db`, `cartograph-syntax-cache` (read and write), `TemporaryItems` (write only). If another tool tries to put its
+  {_inline_names(_darwin_temp_names(policy))} (read and write), `TemporaryItems` (write only). If another tool tries to put its
   cache there, that tool is ignoring TMPDIR, so look for an option on the tool side or ask the user to allow the folder name.
 
 ## Local ports
@@ -128,8 +153,7 @@ Only the domains below are reachable, through the supervisor proxy. Anything out
 - `java` uses the Homebrew JDK, not the `/usr/bin/java` stub. First `export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`
   (use `openjdk@21` and so on to match the version the project requires), then `export PATH="$JAVA_HOME/bin:$PATH"`. `/usr/libexec/java_home` cannot find a JDK here.
 - `user.home`, `java.io.tmpdir`, and `GRADLE_USER_HOME` are already pinned to the isolated home (`JAVA_TOOL_OPTIONS`). Do not clear these values.
-- The Gradle distribution, Maven Central, the Plugin Portal, and Google Maven are allowed domains. The first run takes a few minutes to download.
-- The Gradle daemon, the Kotlin daemon, and test workers need arbitrary loopback ports. If the "Local ports" section above does not say
+{_jvm_domains_line(policy)}- The Gradle daemon, the Kotlin daemon, and test workers need arbitrary loopback ports. If the "Local ports" section above does not say
   "loopback fully open", Gradle cannot run in this workspace, so ask the user for a `state/loopback-grants.json` grant and stop.
 - The file watching warning "Could not start the FSEvents stream" is harmless and is already turned off with `org.gradle.vfs.watch=false`.
 

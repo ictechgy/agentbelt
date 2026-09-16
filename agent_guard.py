@@ -42,14 +42,22 @@ def load_path_config():
 
 def newest_nvm_node(home):
     """Node candidate when no config is set: the highest nvm version, else Homebrew. If absent at launch, run_confined closes."""
-    candidates = list((home / '.nvm/versions/node').glob('v*/bin/node'))
+    # Every probe is wrapped: this runs at import time, including inside the sandbox where the hook imports this
+    # module and a denied path raises PermissionError. An import failure there denies every tool call.
+    try:
+        candidates = list((home / '.nvm/versions/node').glob('v*/bin/node'))
+    except OSError:
+        candidates = []
     if candidates:
         def version(path):
             return tuple(int(part) for part in path.parents[1].name.lstrip('v').split('.') if part.isdigit())
         return max(candidates, key=version)
     for candidate in ('/opt/homebrew/bin/node', '/usr/local/bin/node'):
-        if Path(candidate).is_file():
-            return Path(candidate)
+        try:
+            if Path(candidate).is_file():
+                return Path(candidate)
+        except OSError:
+            continue
     return home / '.nvm/versions/node/current/bin/node'
 
 
@@ -204,6 +212,13 @@ def workspace_path(raw, scan_hardlinks=True):
         raise GuardError('Hidden home directories cannot be used as workspaces.')
     if relative.as_posix().casefold() in {'desktop', 'documents', 'downloads', 'library', 'pictures', 'movies', 'music', 'public'}:
         raise GuardError('Choose a project subdirectory, not an entire personal folder.')
+    # The workspace is writable by the child. If it contained the guard code, config.json or a trusted executable,
+    # the child could replace what the next launch runs outside Seatbelt (pre-publication review, HIGH).
+    for trusted in (ROOT, NODE, OPENCODE, CLAUDE, PACKET_VENV, KIMI):
+        trusted = Path(trusted)
+        if trusted == path or path in trusted.parents:
+            raise GuardError('The workspace would contain the guard installation or a trusted executable ('
+                             + str(trusted) + '); choose a project directory that does not overlap them.')
     if relative.parts[0].casefold() == 'library':
         raise GuardError('Library cannot be used as a workspace.')
     # Existing hardlinks can expose an inode via an otherwise allowed pathname.
@@ -353,7 +368,7 @@ def darwin_temporary_items():
 def darwin_temp_directories():
     """Names of subdirectories under NSTemporaryDirectory() to open for reading and writing (opt-in).
 
-    This is for tools such as cartograph that ignore TMPDIR and keep their cache in the confstr temporary directory.
+    This is for tools (some Swift indexers, for example) that ignore TMPDIR and keep their cache in the confstr temporary directory.
     Only plain folder names are allowed. Do not add host tool resolution caches such as `xcrun_db-*`: a value written by
     the sandbox could fool the host xcrun.
     """
@@ -407,7 +422,7 @@ def sandbox_policy(workspace, home, domains, extra_reads=()):
             'allowRead': [*system_reads, *map(str, executable_reads), str(workspace), str(home),
                           *map(str, extra_reads), *temp_directories],
             # TemporaryItems is write-only. Foundation atomic writes create temporary files here.
-            # Opt-in temporary subdirectories (the cartograph cache and the like) get both read and write.
+            # Opt-in temporary subdirectories (tool caches that ignore TMPDIR) get both read and write.
             'allowWrite': [str(workspace), str(home), darwin_temporary_items(), *temp_directories],
             'denyWrite': [*deny_secrets, str(workspace / '.git/hooks'), str(workspace / '.git/config'),
                           str(workspace / '.git/config.worktree'), str(workspace / '.git/info/attributes'),
@@ -468,10 +483,14 @@ def short_temp_directory(mode, workspace):
     Limit arithmetic: sun_path 104 bytes - `/znr-<uuid>.sock` (46) = 57 characters. Install path 50 characters + 7 hex = 57.
     """
     identity = hashlib.sha256((mode + '\0' + str(workspace)).encode()).hexdigest()[:7]
-    directory = private_dir(private_dir(private_dir(ROOT / 'state') / 't') / identity)
-    if len(str(directory)) > 57:
-        raise GuardError('The guard install path is too long for a unix socket temp directory.')
-    return directory
+    directory = private_dir(private_dir(ROOT / 'state') / 't') / identity
+    if len(str(directory).encode()) > 57:
+        # The install path depends on the account name; a ten-character name already overflows. Fall back to a short
+        # guard-owned root under /private/tmp. private_dir refuses a directory another user pre-created (owner check).
+        directory = private_dir(Path('/private/tmp') / ('agent-guard-' + str(os.getuid()))) / identity
+        if len(str(directory).encode()) > 57:
+            raise GuardError('No temporary directory short enough for a unix socket path is available.')
+    return private_dir(directory)
 
 
 def persistent_home(mode, workspace):
@@ -562,7 +581,7 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         if loopback_all:
             policy['network']['allowLocalBinding'] = True
         # For opt-in Darwin temp subfolders the policy opens only their interior and `T/` itself stays closed. If the host
-        # cleans the folder away the child cannot create it (cartograph dies right there), so the supervisor creates it
+        # cleans the folder away the child cannot create it (such a tool dies right there), so the supervisor creates it
         # before launching.
         for directory in darwin_temp_directories():
             candidate = Path(directory)
@@ -1300,7 +1319,9 @@ def packet_provider_status(arguments):
     with tempfile.TemporaryDirectory(prefix='packet-safe-doctor-', dir=OWNER_HOME) as workspace, tempfile.TemporaryFile() as output:
         status = run_confined('packet-doctor', Path(workspace),
                               [str(PACKET_PYTHON), '-I', str(ROOT / 'packet_entry.py'), 'doctor'],
-                              extra_env={'PACKET_ASK_CLAUDE_BIN': str(CLAUDE.resolve())},
+                              extra_env={'PACKET_ASK_CLAUDE_BIN': str(CLAUDE.resolve()),
+                                         # The entry point closes without the reviewed version (same gate as real requests).
+                                         'AGENT_GUARD_PACKET_ASK_VERSION': packet_ask_pinned_version()},
                               ephemeral=True, stdout=output)
         output.seek(0)
         lines = output.read(1024 * 1024).decode(errors='replace').splitlines()

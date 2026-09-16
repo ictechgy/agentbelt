@@ -11,18 +11,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install pinned sandbox runtime
-        run: cd runtime && npm ci --ignore-scripts --no-audit --no-fund
       - name: Syntax
         run: |
           /usr/bin/python3 -m compileall -q .
           for f in *.mjs *.cjs; do node --check "$f"; done
-      - name: Pin node for the supervisor
-        run: printf '{\n  "node": "%s"\n}\n' "$(command -v node)" > config.json
+          sh -n install.sh
+      - name: Install into the runner account
+        run: ./install.sh
+      - name: Initialize state (no agents installed on the runner)
+        run: |
+          "$HOME/.local/bin/agent-guard" init
+          "$HOME/.local/bin/agent-guard" doctor || true   # exit 2 is expected: no agent is installed
       - name: Kernel boundary tests (self-contained modules)
+        working-directory: /Users/runner/.local/share/agent-guard
         run: |
           /usr/bin/python3 -m unittest -v \
             tests.test_boundaries tests.test_terminal_boundary tests.test_hardening_fixes \
             tests.test_zcode_hook tests.test_orca_bridge tests.test_prompt_telemetry \
             tests.test_history_restore tests.test_usage_cli tests.test_swift_toolchain \
-            tests.test_temp_and_scoped_rules
+            tests.test_temp_and_scoped_rules tests.test_bootstrap

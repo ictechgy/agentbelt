@@ -930,25 +930,49 @@ AUTOCLAW_NOTICE = ('## AutoClaw coding runtime\n\n'
 
 
 def doctor():
+    """Print which integrations are installed and whether their baselines match; exit 2 when a present one does not."""
     sys.path.insert(0, str(ROOT))
     from adapters.compatibility_check import candidate
     current = candidate()
-    saved = json.loads((ROOT / 'state/compatibility.json').read_text())
-    result = {'opencode': {'version': current['opencode']['version'], 'verified': current['opencode'] == saved.get('opencode')},
-              'zcode': {'version': current['zcode']['version'], 'verified': current['zcode'] == saved.get('zcode')},
-              'autoclaw': ({'version': current['autoclaw']['version'],
-                            'verified': current['autoclaw'] == saved.get('autoclaw')}
-                           if 'autoclaw' in current else None),
-              'kimi': ({'version': current['kimi']['version'], 'verified': current['kimi'] == saved.get('kimi')}
-                       if 'kimi' in current else None),
-              'riskgate': {'policy_available': riskgate_policy().is_file()},
-              'development': development_options(),
-              'mobile': current['mobile'],
-              'claude_skill': (OWNER_HOME / '.claude/skills/packet-ask-safe/SKILL.md').is_file()}
+    baseline_path = ROOT / 'state/compatibility.json'
+    saved = json.loads(baseline_path.read_text()) if baseline_path.is_file() else {}
+
+    def entry(name):
+        if name not in current:
+            return None
+        return {'version': current[name]['version'], 'verified': current[name] == saved.get(name)}
+    try:
+        riskgate_available = riskgate_policy().is_file()
+    except (GuardError, OSError, ValueError):
+        riskgate_available = False
+    result = {name: entry(name) for name in ('opencode', 'zcode', 'autoclaw', 'kimi')}
+    result.update({'riskgate': {'policy_available': riskgate_available},
+                   'development': development_options(),
+                   'mobile': current.get('mobile'),
+                   'claude_skill': (OWNER_HOME / '.claude/skills/packet-ask-safe/SKILL.md').is_file(),
+                   'baseline_present': baseline_path.is_file()})
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    autoclaw_ok = result['autoclaw'] is None or result['autoclaw']['verified']
-    kimi_ok = result['kimi'] is None or result['kimi']['verified']
-    return 0 if result['opencode']['verified'] and result['zcode']['verified'] and autoclaw_ok and kimi_ok else 2
+    present = [value for value in (result['opencode'], result['zcode'], result['autoclaw'], result['kimi']) if value]
+    if not present:
+        print('No supported agent is installed (OpenCode, Zcode, AutoClaw, Kimi Code).', file=sys.stderr)
+        return 2
+    return 0 if all(value['verified'] for value in present) else 2
+
+
+# Package registries a session may reach when `state/development.json` lists them. This is the reviewed maximum;
+# `agent-guard init` writes it as the default. Anything outside is refused even if configured.
+PUBLIC_PACKAGE_DOMAINS = frozenset({
+    'registry.npmjs.org:443', 'pypi.org:443', 'files.pythonhosted.org:443',
+    'github.com:443', 'codeload.github.com:443', 'api.github.com:443',
+    'objects.githubusercontent.com:443', 'raw.githubusercontent.com:443',
+    # GitHub release assets are now redirected to this host. The ripgrep download of OpenCode was blocked
+    # here, which made the glob and grep tools of every session fail.
+    'release-assets.githubusercontent.com:443',
+    'pub.dev:443', 'storage.googleapis.com:443',
+    # Gradle/Maven (JVM). Distributions come from services.gradle.org -> github releases, mavenCentral()
+    # from repo.maven.apache.org, the plugin portal, and google() from dl.google.com/maven.google.com.
+    'services.gradle.org:443', 'repo.maven.apache.org:443', 'repo1.maven.org:443',
+    'plugins.gradle.org:443', 'plugins-artifacts.gradle.org:443', 'dl.google.com:443', 'maven.google.com:443'})
 
 
 def development_options():
@@ -956,18 +980,7 @@ def development_options():
     data = json.loads(path.read_text()) if path.exists() else {'devPorts': [], 'packageDomains': []}
     if any(type(p) is not int or not 1024 <= p <= 65535 for p in data['devPorts']):
         raise GuardError('Invalid development port settings.')
-    reviewed = {'registry.npmjs.org:443', 'pypi.org:443', 'files.pythonhosted.org:443',
-                'github.com:443', 'codeload.github.com:443', 'api.github.com:443',
-                'objects.githubusercontent.com:443', 'raw.githubusercontent.com:443',
-                # GitHub release assets are now redirected to this host. The ripgrep download of OpenCode was blocked
-                # here, which made the glob and grep tools of every session fail.
-                'release-assets.githubusercontent.com:443',
-                'pub.dev:443', 'storage.googleapis.com:443',
-                # Gradle/Maven (JVM). Distributions come from services.gradle.org -> github releases, mavenCentral()
-                # from repo.maven.apache.org, the plugin portal, and google() from dl.google.com/maven.google.com.
-                'services.gradle.org:443', 'repo.maven.apache.org:443', 'repo1.maven.org:443',
-                'plugins.gradle.org:443', 'plugins-artifacts.gradle.org:443', 'dl.google.com:443', 'maven.google.com:443'}
-    if not set(data['packageDomains']) <= reviewed:
+    if not set(data['packageDomains']) <= PUBLIC_PACKAGE_DOMAINS:
         raise GuardError('An unreviewed package download destination was configured.')
     return data
 
@@ -1546,6 +1559,7 @@ def main(argv=None):
     sub.add_parser('zcode-app')
     sub.add_parser('setup-github-token')
     sub.add_parser('doctor')
+    sub.add_parser('init', help='Create the state files a fresh installation needs and record baselines for installed agents.')
     sub.add_parser('live-status')
     sub.add_parser('check-zcode')
     record = sub.add_parser('record-zcode-launch')
@@ -1589,6 +1603,10 @@ def main(argv=None):
         return setup_github_token()
     if args.mode == 'doctor':
         return doctor()
+    if args.mode == 'init':
+        sys.path.insert(0, str(ROOT))
+        from adapters.bootstrap import initialize
+        return initialize()
     if args.mode == 'verify-updates':
         return subprocess.call(['/usr/bin/python3', '-I', str(ROOT / 'adapters/compatibility_check.py')],
                                env={'HOME': str(OWNER_HOME), 'PATH': '/usr/bin:/bin', 'DEVELOPER_DIR': '/Library/Developer/CommandLineTools'})

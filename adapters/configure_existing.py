@@ -306,26 +306,29 @@ def import_settings():
     opencode_file = HOME / '.config/opencode/opencode.jsonc'
     zcode_file = HOME / '.zcode/cli/config.json'
     auth = json.loads(auth_file.read_text())
-    source = parse_jsonc(opencode_file.read_text())
-    original_zcode = json.loads(zcode_file.read_text())
+    source = parse_jsonc(opencode_file.read_text()) if opencode_file.is_file() else {}
     config, scoped_auth, profile = opencode_assets(auth, source,
         embedded_endpoints(opencode_binary().read_bytes()))
-    updated_zcode = add_zcode_hook(original_zcode)
     state = ROOT / 'state'
-    backups = state / 'backups'
-    backups.mkdir(mode=0o700, parents=True, exist_ok=True)
-    backup = backups / 'zcode-cli-config.before-guard.json'
-    if not backup.exists():
-        fd = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w') as out:
-            json.dump(original_zcode, out)
-            out.write('\n')
-    publish_settings({state / 'opencode-config.json': config,
-                      state / 'opencode-auth.json': scoped_auth,
-                      state / 'opencode-profile.json': profile,
-                      zcode_file: updated_zcode})
+    updates = {state / 'opencode-config.json': config,
+               state / 'opencode-auth.json': scoped_auth,
+               state / 'opencode-profile.json': profile}
+    # The Zcode hook is installed only where Zcode is set up; an OpenCode-only Mac has no such file.
+    if zcode_file.is_file():
+        original_zcode = json.loads(zcode_file.read_text())
+        backups = state / 'backups'
+        backups.mkdir(mode=0o700, parents=True, exist_ok=True)
+        backup = backups / 'zcode-cli-config.before-guard.json'
+        if not backup.exists():
+            fd = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, 'w') as out:
+                json.dump(original_zcode, out)
+                out.write('\n')
+        updates[zcode_file] = add_zcode_hook(original_zcode)
+    publish_settings(updates)
     print('Selected OpenCode provider count:', len(scoped_auth))
-    print('Zcode hook installed; credential values were not printed.')
+    print('Zcode hook installed; credential values were not printed.' if zcode_file.is_file()
+          else 'Zcode is not set up on this Mac; only the OpenCode profile was written.')
 
 
 def main():

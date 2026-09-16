@@ -60,9 +60,16 @@ Run `agent-guard doctor` to see which baselines are verified.
 git clone https://github.com/ictechgy/agent-guard
 cd agent-guard
 ./install.sh              # copies code to ~/.local/share/agent-guard, pins node, npm ci, builds the launcher
+agent-guard init          # state for the agents that are installed; records their hashes (trust on first install)
 agent-guard doctor
 cd ~/.local/share/agent-guard && /usr/bin/python3 -m unittest discover -s tests
 ```
+
+`init` only fills in what is missing: the reviewed package-registry list, an example riskgate policy if you
+have none (`~/.config/riskgate/riskgate.yaml`), Zcode profiles when Zcode is installed, the packet-ask version
+gate when packet-ask is installed, and a hash baseline for every installed agent. Install the agents from
+trusted sources before running it; from then on a changed binary refuses to launch until
+`agent-guard verify-updates` re-runs the suite and records the new hash.
 
 Then import credentials for the providers you use (only allowlisted providers are copied, and
 only `{type, key}`):

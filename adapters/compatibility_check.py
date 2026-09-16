@@ -92,16 +92,39 @@ def kimi_candidate(binary=None):
 
 
 def merged_baseline(current, saved):
-    """Preserve the saved optional entries (autoclaw) on top of the new candidate. If the baseline were cleared just because the app is momentarily absent, a reinstall would bless any hash."""
+    """Preserve the saved optional entries on top of the new candidate. If the baseline were cleared just because the app is momentarily absent, a reinstall would bless any hash."""
     merged = dict(current)
-    for optional in ('autoclaw', 'kimi'):
+    for optional in ('opencode', 'zcode', 'mobile', 'autoclaw', 'kimi'):
         if optional not in merged and optional in (saved or {}):
             merged[optional] = saved[optional]
     return merged
 
 
-def candidate():
-    with (APP / 'Contents/Info.plist').open('rb') as stream:
+def opencode_candidate():
+    """Version and hash of the installed OpenCode binary, or None when it is not installed."""
+    binary = guard_paths().OPENCODE
+    if not binary.is_file():
+        return None
+    with tempfile.TemporaryDirectory(prefix='guard-version-') as home:
+        run = subprocess.run([str(binary), '--version'], cwd=home, capture_output=True,
+                             text=True, timeout=15, env={
+            'HOME': home, 'PATH': '/usr/bin:/bin', 'OPENCODE_DISABLE_AUTOUPDATE': 'true',
+            'OPENCODE_DISABLE_MODELS_FETCH': 'true', 'OPENCODE_DISABLE_PROJECT_CONFIG': 'true'})
+    version = run.stdout.strip()
+    if run.returncode or not version or len(version) > 50 or any(c not in '0123456789.-abcdefghijklmnopqrstuvwxyz' for c in version):
+        raise ValueError('OpenCode version probe failed')
+    return {'version': version, 'sha256': digest(binary)}
+
+
+def zcode_candidate(app=None):
+    """Version and hashes of the installed Zcode desktop app, or None when it is not installed.
+
+    The routing strings are checked so that an app update which moves the agent-server hook is noticed before launch.
+    """
+    app = Path(app) if app is not None else APP
+    if not (app / 'Contents/Info.plist').is_file():
+        return None
+    with (app / 'Contents/Info.plist').open('rb') as stream:
         zcode_version = plistlib.load(stream)['CFBundleShortVersionString']
     host = asar_text('out/host/index.js')
     desktop = asar_text('out/main/index.js')
@@ -110,25 +133,34 @@ def candidate():
         raise ValueError('Zcode backend routing needs review')
     if not all(value in desktop for value in ['createWebRemoteControlManager', 'relayWsUrl']):
         raise ValueError('Zcode mobile relay routing needs review')
-    with tempfile.TemporaryDirectory(prefix='guard-version-') as home:
-        run = subprocess.run([str(guard_paths().OPENCODE), '--version'], cwd=home, capture_output=True,
-                             text=True, timeout=15, env={
-            'HOME': home, 'PATH': '/usr/bin:/bin', 'OPENCODE_DISABLE_AUTOUPDATE': 'true',
-            'OPENCODE_DISABLE_MODELS_FETCH': 'true', 'OPENCODE_DISABLE_PROJECT_CONFIG': 'true'})
-    version = run.stdout.strip()
-    if run.returncode or not version or len(version) > 50 or any(c not in '0123456789.-abcdefghijklmnopqrstuvwxyz' for c in version):
-        raise ValueError('OpenCode version probe failed')
-    return {'opencode': {'version': version, 'sha256': digest(guard_paths().OPENCODE)},
-            'zcode': {'version': zcode_version,
-                      'asarSha256': digest(APP / 'Contents/Resources/app.asar'),
-                      'agentSha256': digest(APP / 'Contents/Resources/glm/zcode.cjs')},
-            'mobile': 'desktop relay code present; phone pairing requires a device check',
-            **({'autoclaw': autoclaw} if (autoclaw := autoclaw_candidate()) is not None else {}),
-            **({'kimi': kimi} if (kimi := kimi_candidate()) is not None else {})}
+    return {'version': zcode_version,
+            'asarSha256': digest(app / 'Contents/Resources/app.asar'),
+            'agentSha256': digest(app / 'Contents/Resources/glm/zcode.cjs')}
+
+
+def candidate():
+    """Baseline entries for every installed agent. Each integration is optional; an empty result means no agent is installed."""
+    result = {}
+    opencode = opencode_candidate()
+    if opencode is not None:
+        result['opencode'] = opencode
+    zcode = zcode_candidate()
+    if zcode is not None:
+        result['zcode'] = zcode
+        result['mobile'] = 'desktop relay code present; phone pairing requires a device check'
+    autoclaw = autoclaw_candidate()
+    if autoclaw is not None:
+        result['autoclaw'] = autoclaw
+    kimi = kimi_candidate()
+    if kimi is not None:
+        result['kimi'] = kimi
+    return result
 
 
 def main():
     before = candidate()
+    if not before:
+        raise ValueError('No supported agent is installed; nothing to verify')
     env = {'HOME': pwd.getpwuid(os.getuid()).pw_dir, 'PATH': '/usr/bin:/bin',
            'DEVELOPER_DIR': '/Library/Developer/CommandLineTools', 'LANG': 'en_US.UTF-8'}
     run = subprocess.run(['/usr/bin/python3', '-m', 'unittest', 'discover', '-s', 'tests'],
@@ -141,13 +173,15 @@ def main():
     # Reuse staged publication and failure restoration for the two non-secret profiles.
     sys.path.insert(0, str(ROOT))
     from adapters.configure_existing import publish_settings
-    profile_path = ROOT / 'state/zcode-profile.json'
-    profile = json.loads(profile_path.read_text())
-    profile['reviewedDesktopVersion'] = before['zcode']['version']
     baseline_path = ROOT / 'state/compatibility.json'
     saved = json.loads(baseline_path.read_text()) if baseline_path.is_file() else {}
     before = merged_baseline(before, saved)
-    updates = {baseline_path: before, profile_path: profile}
+    updates = {baseline_path: before}
+    profile_path = ROOT / 'state/zcode-profile.json'
+    if 'zcode' in before and profile_path.is_file():
+        profile = json.loads(profile_path.read_text())
+        profile['reviewedDesktopVersion'] = before['zcode']['version']
+        updates[profile_path] = profile
     autoclaw_profile_path = ROOT / 'state/autoclaw-profile.json'
     if 'autoclaw' in before and autoclaw_profile_path.is_file():
         autoclaw_profile = json.loads(autoclaw_profile_path.read_text())

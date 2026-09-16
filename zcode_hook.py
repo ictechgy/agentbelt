@@ -120,7 +120,9 @@ def evaluate(payload):
             # Host tools still require confirmation after policy evaluation.
             verdict = 'ask'
             encoded = base64.b64encode(command.encode('utf-8')).decode('ascii')
-            updated['command'] = shlex.join([str(ROOT.parent.parent / 'bin/agent-guard'),
+            # Invoke the supervisor by its own path rather than through a wrapper: the wrapper directory is an
+            # installer choice (AGENT_GUARD_BIN) that the hook, running inside the sandbox, cannot look up.
+            updated['command'] = shlex.join(['/usr/bin/python3', '-I', str(ROOT / 'agent_guard.py'),
                                              'zcode-shell', str(workspace), encoded])
         return decision(verdict, 'The riskgate and project-scope sandbox policies are applied.', updated)
     if tool in {'Agent', 'Task'} and confined:

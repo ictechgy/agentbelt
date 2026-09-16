@@ -52,7 +52,7 @@ esac
 
 umask 077
 ensure_dir "$TARGET"; chmod 700 "$TARGET"
-for sub in runtime native tests vendor adapters; do ensure_dir "$TARGET/$sub"; done
+for sub in runtime native tests vendor adapters examples; do ensure_dir "$TARGET/$sub"; done
 ensure_dir "$BIN"
 
 # 1. Code. Only reviewed source files; state/ and config.json are left alone.
@@ -63,6 +63,7 @@ chmod 700 "$TARGET/agent_guard.py"
 for file in "$REPO"/tests/*.py; do publish "$file" "$TARGET/tests/$(basename "$file")" 600; done
 for file in "$REPO"/adapters/*.py; do publish "$file" "$TARGET/adapters/$(basename "$file")" 600; done
 publish "$REPO/native/SafeIcon.icns" "$TARGET/native/SafeIcon.icns" 600
+for file in "$REPO"/examples/*; do publish "$file" "$TARGET/examples/$(basename "$file")" 600; done
 publish "$REPO/runtime/package.json" "$TARGET/runtime/package.json" 600
 publish "$REPO/runtime/package-lock.json" "$TARGET/runtime/package-lock.json" 600
 rsync -a --no-links --exclude __pycache__ "$REPO/vendor/" "$TARGET/vendor/"
@@ -114,8 +115,9 @@ agent-guard installed to $TARGET
   node:      $NODE_BIN
   wrappers:  $BIN/{agent-guard,safecode,opencode-safe,safekimi,token-usage}
 Next steps:
-  1. agent-guard doctor                       # verify runtime, baselines, integrations
-  2. /usr/bin/python3 "$TARGET/adapters/configure_existing.py" --authorized-live-settings   # import OpenCode credentials
-  3. cd <project> && safecode                 # or safekimi
+  1. agent-guard init                         # create state for the agents that are installed, record baselines
+  2. agent-guard doctor                       # verify runtime, baselines, integrations
+  3. /usr/bin/python3 "$TARGET/adapters/configure_existing.py" --authorized-live-settings   # import OpenCode credentials
+  4. cd <project> && safecode                 # or safekimi
 Run the test suite from $TARGET: /usr/bin/python3 -m unittest discover -s tests
 EOF

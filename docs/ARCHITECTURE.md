@@ -53,6 +53,16 @@
 - **Control directories carry an owner marker** (`owner.json`: pid + start time). Reaping removes
   only directories whose owner is provably gone; an orphan without a marker is left alone.
 
+## Bootstrap of a fresh installation
+
+`install.sh` copies code, pins Node and builds the launcher. `agent-guard init` then creates the state a fresh
+machine lacks, and only what is missing: the reviewed package-registry list (`state/development.json`), an
+example riskgate policy when the operator has none, Zcode profiles and the Safe app when Zcode is installed,
+the packet-ask version gate when packet-ask is installed, and a hash baseline for every installed agent.
+That baseline is trust-on-first-install; from then on `verify-updates` is the only path that changes it.
+Every integration is optional: `doctor` reports `null` for absent agents and fails only when a present one
+does not match its baseline.
+
 ## Where things live
 
 | Path | Contents |

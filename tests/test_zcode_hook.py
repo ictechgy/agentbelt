@@ -61,9 +61,11 @@ class ZcodeHookTests(unittest.TestCase):
         self.assertEqual(decision['permissionDecision'], 'ask')
         updated = decision['updatedInput']
         argv = shlex.split(updated['command'])
-        self.assertEqual(argv[1], 'zcode-shell')
-        self.assertEqual(argv[2], str(self.work))
-        self.assertEqual(base64.b64decode(argv[3]).decode(), original)
+        self.assertEqual(argv[:2], ['/usr/bin/python3', '-I'])
+        self.assertEqual(argv[2], str(ROOT / 'agent_guard.py'))
+        self.assertEqual(argv[3], 'zcode-shell')
+        self.assertEqual(argv[4], str(self.work))
+        self.assertEqual(base64.b64decode(argv[5]).decode(), original)
         self.assertEqual(updated['timeout'], 1000)
         self.assertFalse(updated['dangerouslyDisableSandbox'])
 

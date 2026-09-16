@@ -177,14 +177,21 @@ class LaunchWiringTests(unittest.TestCase):
             return 0
 
         with tempfile.TemporaryDirectory(prefix='orca-wiring-', dir=Path.home()) as tmp:
-            work = Path(tmp)
+            work = Path(tmp) / 'project'
+            work.mkdir()
             plugin = work / 'hooks/plugins/orca-opencode-status.js'
             plugin.parent.mkdir(parents=True)
             plugin.write_text('export default {id: "synthetic", server: async () => ({})};\n')
+            # A synthetic install root: the safecode path requires an imported auth store, which a CI runner lacks.
+            root = Path(tmp) / 'guard'
+            (root / 'state').mkdir(parents=True)
+            (root / 'state/opencode-auth.json').write_text('{}')
+            (root / 'state/opencode-config.json').write_text('{}')
             previous = os.getcwd()
             os.chdir(work)
             try:
                 with FakeOrca() as orca, \
+                     patch.object(g, 'ROOT', root), \
                      patch.object(g, 'run_confined', fake_run_confined), \
                      patch.object(g, 'verify_opencode_binary', lambda: None), \
                      patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \

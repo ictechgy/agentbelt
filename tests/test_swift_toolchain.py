@@ -92,7 +92,7 @@ class SandboxTests(unittest.TestCase):
             (work / 't.swift').write_text('import Foundation\nprint(1)\n'
                                           'try! Data("{}".utf8).write(to: URL(fileURLWithPath: CommandLine.arguments[1] + "/atomic.json"), options: .atomic)\n'
                                           'print("ATOMIC_OK")\n')
-            planted = Path(g.darwin_temporary_items()) / 'agent-guard-planted-canary.txt'
+            planted = Path(g.darwin_temporary_items()) / ('agent-guard-planted-canary-' + str(os.getpid()) + '.txt')  # unique per run: parallel suites share T/
             planted.parent.mkdir(parents=True, exist_ok=True)
             planted.write_text('CANARY_TEMP_ITEM')
             try:

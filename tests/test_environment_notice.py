@@ -1,0 +1,148 @@
+"""세션 시작 시 격리 환경 설명이 자식에게 전달되는지 확인하는 회귀."""
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT))
+import agent_guard as g
+import environment_notice as notice
+
+
+def confined(script, **options):
+    """실제 가드 정책으로 셸 조각을 실행하고 (종료 코드, 출력)을 돌려준다."""
+    with tempfile.TemporaryDirectory(prefix='notice-', dir=Path.home()) as tmp:
+        work = Path(tmp)
+        (work / 'p.sh').write_text(script)
+        with tempfile.TemporaryFile() as out:
+            status = g.run_confined('exec', work, ['/bin/bash', str(work / 'p.sh')],
+                                    domains=['pub.dev:443'], ephemeral=True, stdout=out, **options)
+            out.seek(0)
+            return status, out.read().decode(errors='replace')
+
+
+class RenderTests(unittest.TestCase):
+    def setUp(self):
+        self.home = Path('/tmp/synthetic-home')
+        self.workspace = Path('/tmp/synthetic-work')
+        self.env = {'HOME': str(self.home), 'TMPDIR': str(self.home / 'tmp'), 'PUB_CACHE': str(self.home / '.pub-cache'),
+                    'PATH': '/opt/homebrew/bin:/usr/bin', 'GH_TOKEN': 'SYNTHETIC_TOKEN_VALUE_9f3'}
+        self.policy = g.sandbox_policy(self.workspace, self.home, ['pub.dev:443', 'api.z.ai:443'])
+        self.text = notice.render_environment_notice(self.workspace, self.home, self.env, self.policy)
+
+    def test_states_isolated_home_temp_and_workspace(self):
+        self.assertIn(str(self.home), self.text)
+        self.assertIn(str(self.home / 'tmp'), self.text)
+        self.assertIn(str(self.workspace), self.text)
+        self.assertIn('AGENT_GUARD_ENVIRONMENT.md', self.text)
+
+    def test_lists_reachable_domains_and_readable_paths(self):
+        self.assertIn('pub.dev:443', self.text)
+        self.assertIn('api.z.ai:443', self.text)
+        self.assertIn('/opt/homebrew', self.text)
+        self.assertIn('/Library/Developer/CommandLineTools', self.text)
+
+    def test_describes_github_auth_without_leaking_token(self):
+        self.assertIn('GH_TOKEN', self.text)
+        self.assertIn('.config/gh', self.text)
+        self.assertNotIn('SYNTHETIC_TOKEN_VALUE_9f3', self.text)
+        absent = notice.render_environment_notice(self.workspace, self.home, dict(self.env, GH_TOKEN=''), self.policy)
+        self.assertNotEqual(absent, self.text)
+
+    def test_explains_dart_cache_location(self):
+        """실사용 세션이 ~/.pub-cache 차단을 보고 dart 검증이 불가능하다고 오진했다."""
+        self.assertIn(str(self.home / '.pub-cache'), self.text)
+        self.assertIn('PUB_CACHE', self.text)
+        self.assertIn('dart pub get', self.text)
+
+    def test_states_that_nested_launchers_cannot_run_inside(self):
+        """sandbox-exec 중첩은 커널이 거부하므로 packet-ask 는 호스트에서만 돈다."""
+        self.assertIn('packet-ask', self.text)
+        self.assertIn('sandbox-exec', self.text)
+        self.assertIn('호스트', self.text)
+
+    def test_explains_the_session_loopback_port_for_dart_coverage(self):
+        """실사용 세션이 dart test --coverage 가 VM 서비스 포트에서 멈춘다고 보고했다."""
+        with_port = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENT_GUARD_LOOPBACK_PORT='47311'), self.policy)
+        self.assertIn('47311', with_port)
+        self.assertIn('--enable-vm-service=$AGENT_GUARD_LOOPBACK_PORT', with_port)
+        self.assertIn('--no-dds', with_port)
+        self.assertIn('EPERM', self.text)
+
+    def test_relay_session_points_at_packet_review_instead_of_the_user(self):
+        """실사용 세션이 '호스트 실행을 요청하고 멈춰라' 절을 따라 packet-review 를 쓰지 않았다."""
+        relayed = notice.render_environment_notice(self.workspace, self.home, dict(self.env, AGENT_GUARD_PACKET_REVIEW='1'), self.policy)
+        self.assertNotIn('사용자가 호스트\n  터미널에서 실행할', relayed)
+        self.assertNotIn('명령을 제시한 뒤 멈춘다', relayed)
+        self.assertIn('`packet-review`', relayed)
+        # 중계가 없는 세션은 여전히 사용자에게 넘기라고 안내한다.
+        self.assertIn('명령을 제시한 뒤 멈춘다', self.text)
+
+    def test_explains_swiftpm_flags(self):
+        """세션이 'Swift 툴체인 고장'으로 오진했다. 실제로는 모듈 캐시·중첩 샌드박스·*.db 규칙이었다."""
+        self.assertIn('swift build --build-system native --disable-sandbox --scratch-path "$TMPDIR/swiftpm-build"', self.text)
+        self.assertIn('not supported by the compiler', self.text)
+        self.assertIn('cartograph-index-db', self.text)
+
+    def test_warns_against_repairing_the_host(self):
+        self.assertIn('sudo', self.text)
+        self.assertIn('rm -rf', self.text)
+
+
+class ZcodeWiringTests(unittest.TestCase):
+    def test_zcode_backend_requests_global_agents_file(self):
+        """Zcode 는 $HOME/.zcode/AGENTS.md 를 전역 지침으로 읽으므로 그 경로로 안내문을 요청해야 한다."""
+        from unittest.mock import patch
+        import os
+        captured = {}
+
+        def fake_run_confined(mode, workspace, command, *args, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+        with tempfile.TemporaryDirectory(prefix='zcode-notice-', dir=Path.home()) as tmp:
+            previous = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with patch.object(g, 'run_confined', fake_run_confined), \
+                     patch.object(g, 'verify_zcode_binary', lambda: None), \
+                     patch.object(g, 'riskgate_policy', lambda: ROOT / 'state/riskgate.json'), \
+                     patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}):
+                    self.assertEqual(g.main(['zcode-backend', 'app-server', '--stdio']), 0)
+            finally:
+                os.chdir(previous)
+        self.assertEqual(list(captured['instruction_files']), ['.zcode/AGENTS.md'])
+
+
+class DeliveryTests(unittest.TestCase):
+    def test_notice_is_readable_but_locked_in_isolated_home(self):
+        status, out = confined('cat "$HOME/AGENT_GUARD_ENVIRONMENT.md" | head -3; '
+                               'echo tampered 2>/dev/null >> "$HOME/AGENT_GUARD_ENVIRONMENT.md" && echo WRITE_OK || echo WRITE_DENIED')
+        self.assertEqual(status, 0, out)
+        self.assertIn('agent-guard', out)
+        self.assertIn('WRITE_DENIED', out)
+        self.assertNotIn('WRITE_OK', out)
+
+    def test_instruction_files_receive_the_same_notice(self):
+        status, out = confined('cmp -s "$HOME/AGENT_GUARD_ENVIRONMENT.md" "$HOME/.zcode/AGENTS.md" && echo SAME || echo DIFF; '
+                               'echo x 2>/dev/null >> "$HOME/.zcode/AGENTS.md" && echo WRITE_OK || echo WRITE_DENIED',
+                               instruction_files=['.zcode/AGENTS.md'])
+        self.assertEqual(status, 0, out)
+        self.assertIn('SAME', out)
+        self.assertIn('WRITE_DENIED', out)
+
+    def test_protected_opencode_config_directory_receives_notice(self):
+        status, out = confined('cmp -s "$OPENCODE_CONFIG_DIR/AGENTS.md" "$HOME/AGENT_GUARD_ENVIRONMENT.md" && echo SAME || echo DIFF; '
+                               'grep -c "$HOME" "$OPENCODE_CONFIG_DIR/AGENTS.md"; '
+                               'echo x 2>/dev/null >> "$OPENCODE_CONFIG_DIR/AGENTS.md" && echo WRITE_OK || echo WRITE_DENIED',
+                               protect_opencode_config=True)
+        self.assertEqual(status, 0, out)
+        self.assertIn('SAME', out)
+        self.assertNotIn('\n0\n', '\n' + out)
+        self.assertIn('WRITE_DENIED', out)
+
+
+if __name__ == '__main__':
+    unittest.main()

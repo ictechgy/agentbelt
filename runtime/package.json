@@ -1,0 +1,9 @@
+{
+  "name": "local-agent-guard-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.75",
+    "undici": "7.16.0"
+  }
+}

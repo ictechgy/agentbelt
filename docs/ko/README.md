@@ -1,146 +1,103 @@
-# 이 맥의 에이전트 보호 실행기
+# agentbelt (한국어)
 
-리뷰에서 검증된 보호 결함을 수정했다. [수정·검증 기록](REPAIRS.md)에 변경과 검증 범위를 기록했다.
-[원래 리뷰 보고서](.codex/artifacts/ultra-review/agentbelt-eaa74cf67b0c430d/report.md)는 수정 전 재현 기록이다.
+영어 README 가 기본 문서입니다: [../../README.md](../../README.md). 이 문서는 같은 내용의 요약이며, 두 문서가 다르면 영어 쪽이 맞습니다.
 
-최근 실제 사용에서 발견한 시작·대화·provider 문제와 Dock 개선은 [복구 기록](RECOVERY.md)에 정리했다.
+## 무엇을 하는가
 
-## 호환성 보완
+macOS 에서 AI 코딩 에이전트를 **프로젝트 디렉터리 하나에 가둬** 실행합니다. 경계는 커널(Seatbelt)이 강제하고, 실제로 경계를 넘어 보는 테스트로 검증합니다.
 
-[호환성 적용 기록](COMPATIBILITY.md)에 riskgate 통합, Git 작업, 업데이트 검사와 남은 승인·실기기 검증을 정리했다.
+agentbelt 는 감독자입니다. 실행마다 정책을 만들어 `sandbox-exec` 안에서 에이전트 CLI 를 띄웁니다. 샌드박스 안에서 에이전트가 보는 것:
 
-- 상태 확인: `agentbelt doctor`
-- Zcode/OpenCode 업데이트 후: `agentbelt verify-updates`
-- Claude Code에서도 `/packet-ask-safe` 사용 가능. 호출 대상은 GLM이며 Claude Code가 MAIN 역할이다.
+| 자원 | 에이전트에게 보이는 것 |
+| --- | --- |
+| 파일 | 프로젝트 디렉터리, 프로젝트별 격리 `HOME`, 필요한 도구 바이너리. 실제 홈·다른 프로젝트·Keychain·`/opt/homebrew/var` 는 보이지 않음. 프로젝트 안의 비밀 파일(`.env`, 키, keystore, SQLite)은 읽을 수 없음. |
+| 네트워크 | 감독자 프록시를 거쳐 허용 목록의 모델 제공자·패키지 레지스트리 호스트만. 텔레메트리·자동 갱신·CDN 은 목록에 없음. |
+| 데스크톱 서비스 | 클립보드·Keychain·Apple Events·LaunchServices·FSEvents 는 서비스 이름으로 거부. 복사한 내용을 읽을 수 없고, 프로젝트 밖 파일 이름 변경도 볼 수 없음. |
+| 터미널 | 상속된 TTY 만. 입력 주입(`TIOCSTI`) 거부. |
+| 자격 증명 | 제공자 키는 에이전트 자체 인증 저장소에서 검토된 제공자만 한 번 가져와 격리 홈에 링크. 저장소 범위 GitHub 토큰은 세션별 주입 가능. |
+| 자기 인식 | 세션마다 생성되는 `AGENTBELT_ENVIRONMENT.md` 가 무엇이 닿는지 알려 줘서, 에이전트가 샌드박스를 "고장난 기계" 로 오진하지 않음. |
 
-## 현재 상태
+에이전트 자체의 승인 프롬프트는 그대로 동작하고 agentbelt 는 그 아래에 있습니다. 프롬프트나 훅은 가두려는 프로세스 안에서 돌기 때문에 에이전트가 설정을 고쳐 끌 수 있지만, Seatbelt 정책은 에이전트가 시작하기 전에 적용되고 안에서 넓힐 수 없습니다.
 
-- macOS 계정을 바꾸지 않고 사용할 수 있는 Zcode 백엔드 실행기와 훅을 구현했다.
-- `~/Applications/Zcode Safe.app`은 기존 Zcode 화면·프로필을 유지하고 에이전트의
-  시작 경로를 `zcode-backend-safe`로 지정한다. 기존 Zcode가 실행 중이면 종료를
-  요구하며 세션을 자동으로 닫지 않는다.
-- 보호된 Zcode 백엔드의 시작과 실제 `workspace/readState` 프로토콜 응답을 확인했다.
-- OpenCode는 실제 바이너리와 로컬 가짜 모델 서버를 연결해 Bash를 통한 프로젝트
-  밖 가짜 민감 파일 읽기가 차단되고, 내용이 모델 서버에 전달되지 않는 것을 확인했다.
-- 사용자 승인 후 실제 인증 이관과 Zcode 전역 훅 적용을 완료했다.
-  OpenCode의 `alibaba-token-plan` API 인증만 이관했고 OpenAI OAuth는 제외했다.
-  네트워크를 차단한 검증 환경에서 Qwen·DeepSeek를 포함한 모델 식별자 26개의
-  로딩을 확인했다. 이는 실제 API의 응답/구독 권한까지 확인했다는 뜻은 아니다.
-- API 허용 대상은 OpenCode의 `token-plan.ap-southeast-1.maas.aliyuncs.com:443`과
-  Zcode/GLM의 `api.z.ai:443`이다. 로컬 서비스 직접 접속은 허용하지 않는다.
-- 일반 `opencode` 명령과 일반 Zcode 실행 자체에는 OS 격리가 자동 적용되지 않는다.
-- 별도 macOS 사용자 계정은 만들지 않았다. 이전 계정 생성 스크립트는 비활성 보관했다.
+## 지원 에이전트
 
-## 사용할 경로
+| 명령 | 에이전트 | 비고 |
+| --- | --- | --- |
+| `safecode` | [OpenCode](https://opencode.ai) TUI, 현재 디렉터리 | 보호된 설정 디렉터리, 제공자 허용 목록, 감독자 측 리뷰 중계 |
+| `opencode-safe <경로>` | OpenCode, 경로 지정 | `safecode` 와 같은 정책 |
+| `safekimi` | [Kimi Code](https://www.kimi.com/code) CLI, 현재 디렉터리 | 클립보드 커널 차단, 세션 안 디바이스 코드 로그인, FSEvents 없는 디렉터리 감시 |
+| `token-usage` | Alibaba Token Plan 사용량 CLI | 격리 설치; 콘솔 로그인 1회만 호스트 |
+| Zcode Safe.app | Zcode 데스크톱 + 격리 백엔드 | `ZcodeSafe.swift` 로 만든 Dock 런처; riskgate 로 도구 단위 정책 |
+| `autoclaw-backend` | AutoClaw 번들 Zcode CLI | `adapters/install_autoclaw.py` 로 설치; 바깥 에이전트의 호스트 `exec` 없음 |
 
-Dock의 초록색 **Zcode Safe**를 사용한다. 독립된 Safe 관리 앱이 Dock에 남고, 실제 작업 창은 Zcode로 표시된다.
-기존 일반 Zcode가 실행 중이면 먼저 저장·종료한 뒤 Safe로 연다.
-로그아웃이나 사용자 전환은 필요하지 않다. 새로 시작하는 에이전트 백엔드에 적용된다.
+모든 통합은 선택 사항입니다. `agentbelt doctor` 가 설치된 것과 해시 일치 여부를 보고합니다.
 
-OpenCode는 원하는 프로젝트 디렉터리에서 `safecode`로 실행한다.
+## 요구 사항
 
-```sh
-cd /절대/프로젝트/경로
-safecode
-safecode --model 공급자ID/모델ID
+- `/usr/bin/sandbox-exec` 가 있는 macOS. macOS 26 / Apple Silicon 에서 개발·테스트했고, 이전 버전과 Intel Homebrew 배치는 미검증.
+- Xcode Command Line Tools (`/usr/bin/python3`, `clang`; `swiftc` 는 Zcode Dock 런처에만 필요).
+- 감독자 런타임용 Node 22 이상. 선택된 바이너리는 `config.json` 에 고정되어 `nvm install` 이나 `brew upgrade` 가 몰래 바꾸지 못합니다.
+- 위 에이전트 중 하나 이상을 공식 경로로 먼저 설치한 뒤 `agentbelt init` 을 실행합니다.
 
-# 경로를 명시하는 기존 보호 실행기도 유지한다.
-opencode-safe /절대/프로젝트/경로
-opencode-safe /절대/프로젝트/경로 --model 공급자ID/모델ID
-```
-
-Kimi Code 는 원하는 프로젝트 디렉터리에서 `safekimi` 로 실행한다. 클립보드(페이스트보드 서비스)는 커널에서
-차단되고, 로그인은 세션 안 `/login`(디바이스 코드 URL 을 브라우저에서 직접 연다)으로 워크스페이스마다 한 번 한다.
+## 설치
 
 ```sh
-cd /절대/프로젝트/경로
-safekimi
-safekimi -p "한 번만 실행할 프롬프트"
+git clone https://github.com/ictechgy/agentbelt
+cd agentbelt
+./install.sh        # ~/.local/share/agentbelt 에 복사, node 고정, npm ci, 런처 빌드
+agentbelt init      # 이 기기에 없는 상태 파일 생성, 에이전트 해시 기록
+agentbelt doctor    # 설치된 에이전트와 해시 일치 여부
 ```
 
-`safecode`와 `safekimi`는 실제 현재 디렉터리를 사용하고 나머지 인자를 그대로 전달한다.
-조작된 `PWD` 환경변수로 범위를 바꾸지 않는다. 기존 `opencode` 명령은 변경하지 않았다.
-OpenCode의 설정용 HOME은 실행마다 새로 만들고 설정 디렉터리 쓰기를 차단한다.
-대화·인증 연결·캐시·상태는 기존 프로젝트별 XDG 데이터 경로에 유지한다.
-이전에 격리 홈에 만들어진 개인 설정은 다음 실행의 승인 정책에 병합하지 않는다.
+명령은 `~/.local/bin` 에 놓이니 `PATH` 에 있어야 합니다.
 
-packet-ask의 GLM 보호 실행은 프로젝트에서 다음 형식으로 사용한다.
+OpenCode 는 쓰는 제공자 키를 가져옵니다. 허용 목록의 제공자만, `{type, key}` 만 복사됩니다:
 
 ```sh
-packet-ask-safe --use-keychain review --provider glm --files src/example.py --question-stdin
+/usr/bin/python3 ~/.local/share/agentbelt/adapters/configure_existing.py --authorized-live-settings
+cd ~/my-project && safecode
 ```
 
-`--use-keychain`은 필요할 때 기존 `packet-ask-glm` 전용 항목을 읽도록 명시적으로
-허용하는 옵션이다. 전용 환경변수 `PACKET_ASK_GLM_KEY`가 있으면 그것을 우선 사용한다.
-키체인 조회는 신뢰하는 호스트 실행기가 하고, 제한된 자식에는 GLM용 키만 전달한다.
-승인된 전용 GLM 키체인과 가짜 질문만으로 실제 GLM 응답을 확인했다. 키 값과 실제 프로젝트 파일은 출력·전송하지 않았다.
-`inspect`, `--preview`, `--dry-run`은 키체인 값을 읽지 않는다.
-새 키가 필요한 경우에만 실제 macOS Terminal에서 `packet-ask-safe setup-key`를 실행한다.
-이미 등록된 현재 키는 실제 호출 검증을 통과했으므로 다시 입력할 필요가 없다.
-Codex용 `packet-ask-safe` 스킬도 `~/.codex/skills/packet-ask-safe`에 설치되어 있다.
+Kimi Code 는 가져올 것이 없습니다. `cd ~/my-project && safekimi` 뒤 세션 안에서 `/login`. 디바이스 코드 URL 이 찍히면 브라우저에서 엽니다. 토큰은 그 프로젝트의 격리 홈에만 남습니다.
 
-현재 파일 권한 정책상 프로젝트는 개인 홈 아래의 개별 폴더여야 한다.
-홈 전체, Library, 숨겨진 홈 설정 디렉터리, Desktop 전체 같은 넓은 범위는 거부한다.
-프로젝트 내 기존 하드링크가 있으면 독립된 작업 사본을 사용하도록 거부한다.
-읽을 수 없는 하위 폴더 등으로 전체 검사를 마칠 수 없어도 실행을 거부한다.
+`install.sh` 를 다시 실행하면 코드만 제자리에서 갱신됩니다. `state/`(격리 홈·자격 증명·기준선)는 건드리지 않고 기존 `config.json` 도 덮지 않습니다. `init` 은 없는 것만 채우고 있는 파일은 절대 덮지 않습니다.
 
-## 보호 범위
+### 최초 설치 신뢰
 
-- 지정 프로젝트와 에이전트 전용 상태 폴더 외에는 읽기/쓰기를 기본 거부한다.
-- 시스템 실행 파일·라이브러리와 명시한 CLI 실행 코드에는 필요한 읽기만 허용한다.
-- 프로젝트의 `.env*`, 인증·키 파일, 일부 DB 파일 등 알려진 민감 이름을 추가 차단한다.
-- 개인 홈의 SSH·클라우드 인증, 다른 앱 상태, 일반 임시 폴더 및 기존 로컬 서비스에
-  접근할 수 없도록 제한한다.
-- 부모 프로세스의 임의 환경변수는 전달하지 않는다.
-- 키체인 서비스와 Apple Events/Launch Services를 통한 우회 경로를 제한한다.
-- 네트워크는 승인해 설정한 API 도메인과 포트만 프록시를 통해 허용한다.
-- Zcode의 JS/브라우저/MCP 계열 도구는 전역 훅의 허용 대상에서 제외한다.
-- 보호된 백엔드가 아닌 일반 Zcode 세션에서는 검색·하위 에이전트가 더 제한된다.
-  Bash 요청은 별도 OS 샌드박스 실행으로 바꾼다.
+`init` 은 설치된 에이전트 바이너리의 해시를 기준선으로 기록합니다. 이후 바이너리가 바뀌면 `agentbelt verify-updates` 가 테스트 스위트를 다시 돌려 새 해시를 기록하기 전까지 실행이 거부됩니다. 스스로 갱신하는 에이전트는 클립보드·네트워크·파일 동작도 바뀌었을 수 있기 때문입니다.
 
-## 한계
+## 알려진 한계
 
-Zcode GUI 전체가 OS 샌드박스에 들어가는 것은 아니다. GUI가 이미 읽어서 전달한
-첨부 파일·대화 이력·클립보드나, 사용자가 직접 붙여 넣은 데이터까지 되돌려 막지 않는다.
-허용된 소스 본문이나 Git 이력 속에 들어 있는 비밀은 파일 이름만으로 판별할 수 없다.
-개발용 자료만 작업 폴더에 두고 개인 브라우저 데이터 가져오기를 사용하지 않아야 한다.
+문서화된 경계이며 놓친 것이 아닙니다.
 
-모델 호출에 필요한 선택된 공급자의 인증은 해당 CLI에 제공된다. 다른 공급자의
-인증을 함께 복사하지 않는다. 모델용 키까지 도구 프로세스에서 완전히 숨기는 별도의
-자격증명 주입 프록시는 구현 범위에 포함되지 않았다.
+- **네트워크 허용은 호스트 단위이지 경로 단위가 아닙니다.** `api.example.com` 이 허용되면 그 호스트의 모든 경로에 닿습니다. 경로 단위 브로커는 추후 작업.
+- **터미널은 샌드박스 밖입니다.** 터미널이 OSC 52 클립보드 *읽기* 질의에 답하면 어떤 자식 프로세스든 그 경로로 클립보드를 읽습니다. 개발에 쓴 터미널은 답하지 않았습니다.
+- **로그인 시점에 설정이 필요한 에이전트(Kimi Code)는 설정이 세션 간 쓰기 가능합니다.** 한 세션이 심은 설정을 같은 프로젝트의 다음 세션이 읽습니다. 영향은 샌드박스 안에 한정.
+- **주입된 GitHub 토큰은 세션에 보입니다.** 모델이 직접 보진 않지만 환경 변수를 출력하면 컨텍스트에 실립니다. 에이전트가 push 해야 하는 프로젝트에만 주입하세요.
+- **`/opt/homebrew` 는 `var` 를 빼고 읽힙니다.** 도구 바이너리에 필요하며 `etc` 설정과 Cellar 가 보입니다.
+- **샌드박스 안의 프롬프트는 사람의 증명이 아닙니다.** 진짜 승인이 필요한 일은 실행 전에 호스트에서 정책으로 정합니다.
 
-Zcode 훅만으로는 오류 시 항상 차단되는 보안 경계가 되지 않는다. OS 보호는
-`Zcode Safe.app`에서 시작한 백엔드와 `safecode` / `opencode-safe` 실행 경로에 적용된다.
+## 어렵게 배운 것
 
-## 적용 기록과 재실행
+자세한 내용은 테스트와 [ARCHITECTURE.md](../ARCHITECTURE.md)(영어)에 있습니다.
 
-승인받은 Zcode `~/.zcode/cli/config.json`과 OpenCode 인증 저장소를 검사했고,
-`configure_existing.py --authorized-live-settings`로 필요한 항목만 적용했다.
-기존 Zcode 훅 1개와 플러그인 설정은 유지하고 보호 훅을 추가했다.
-OpenCode의 원본 인증 저장소는 수정하지 않았다.
+- `sandbox-exec` 는 중첩되지 않습니다. 자체 샌드박스를 쓰는 도구(SwiftPM, 리뷰 도우미)는 안에서 그것을 끄거나 감독자가 대신 실행합니다.
+- Seatbelt 우선순위: `denyWrite` 가 `allowWrite` 를 이기고, 구체 op 를 명시한 규칙이 `file-write*` 와일드카드를 이기며, regex 에 negative lookahead 가 없고, `/tmp` 는 심링크라 실경로로 테스트해야 합니다.
+- 기본 거부 프로파일에서 `deny` 줄을 지우는 것은 `allow` 가 아닙니다. Go·Dart 는 macOS 신뢰 평가기를 쓰므로 `com.apple.trustd.agent` 를 명시적으로 허용해야 TLS 가 끝납니다.
+- **FSEvents 는 샙니다.** `com.apple.FSEvents` 를 허용한 샌드박스 클라이언트는 읽을 수 없는 경로의 파일 이름 변경 이벤트까지 받습니다. 계속 거부합니다. libuv 는 실패한 스트림을 `EMFILE` 로 보고하는데 서술자 한도와 무관하며, 디렉터리를 감시하는 Node 에이전트에는 조용한 감시자를 돌려주는 프리로드와 stat 폴링을 줍니다.
+- 상속된 stdio 서술자가 샌드박스가 `fstat` 할 수 없는 파일을 가리키면 Node 가 기동 시 abort 합니다. 테스트 러너가 stderr 를 샌드박스 밖 로그로 보내면 나고, TTY 나 파이프면 나지 않습니다.
+- 에이전트는 보이지 않는 것의 원인을 지어냅니다("툴체인이 고장", "gh 미설치"). 세션 시작 때 샌드박스가 무엇인지 알려 주자 그런 보고가 대부분 사라졌습니다.
 
-Zcode는 종료 후 보호 실행기로 다시 열어 새 백엔드를 시작해야 한다.
-기존 실행 중인 앱/에이전트에는 소급 적용되지 않는다. GUI와 실제 유료 모델 호출을
-포함하는 사용 세션은 사용자가 재실행한 후 확인해야 한다.
+## 저장소 구조
 
-기존 Zcode 설정 백업은 `state/backups`에 권한 600으로 저장했다.
-되돌릴 때는 백업 전체를 무조건 덮어쓰지 말고, 이후 사용자 변경을 보존하면서
-이 도구가 추가한 훅과 거부 규칙만 제거한다.
+영어 README 의 "Repository layout" 절을 참조하세요. 런타임 상태는 `~/.local/share/agentbelt/state/` 에 있고 저장소에 포함되지 않습니다.
 
-## 검증
+## 상태
 
-```sh
-cd ~/.local/share/agentbelt
-/usr/bin/python3 -m unittest discover -s tests -v
-```
+2026년 9월 한 운영자의 일상 설정에서 추출해 다른 기기용으로 다듬었습니다: 개인 경로 없음, 어떤 에이전트 조합에서도 도는 `init`, 대상을 검증하는 설치기. 독립 Codex 리뷰의 지적을 반영했습니다. CI 는 GitHub macOS 러너에서 자립적인 커널 테스트만 돌리고, 에이전트 바이너리가 필요한 테스트는 운영 기기에서 `agentbelt verify-updates` 로 돕니다.
 
-자동 테스트는 가짜 파일·가짜 키·로컬 모델 서버만 사용한다. 별도의 승인된 GLM 실호출에는 가짜 질문만 보냈으며 실제 프로젝트 파일은 보내지 않았다.
-호환성 보완을 포함한 전체 70개 테스트가 통과했다.
-추가 복구에서는 승인된 Zcode 세션 DB·오류 로그를 확인하고 프로젝트별 대화를 Safe로 복원했다. 전용 GLM 키체인도 승인 범위에서 사용했으며 인증 값은 출력하지 않았다. 이전 설정 로딩 검증에서도 인증 값은 출력하지 않았다.
-`safecode` 대화형 화면의 시작과 종료도 가짜 프로젝트의 전용 PTY에서 확인했다.
-터미널 제어는 실제로 상속받은 장치의 필요한 ioctl만 허용하고, 다른 TTY 접근과
-TIOCSTI 입력 주입은 차단한다. 일반 `/dev/tty` 별칭에 대한 ioctl은 허용하지 않는다.
+[`@anthropic-ai/sandbox-runtime`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime) 0.0.75(Apache-2.0)에 의존하며 `runtime/package-lock.json` 으로 고정됩니다.
 
-SRT 0.0.75를 이 폴더의 `runtime`에 고정 설치했다. 시스템 npm 설정을 사용하거나
-설치 스크립트를 실행하지 않았다. Zcode 보호 실행기는 검토한 앱 버전 3.11.2가
-바뀌면 재검증을 요구한다.
+## 라이선스
+
+MIT. `vendor/riskgate` 도 MIT.

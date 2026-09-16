@@ -87,7 +87,8 @@ PACKET_ASK_VERSION_FILE = ROOT / 'state/packet-ask-version.json'
 def packet_ask_pinned_version():
     """The reviewed packet-ask version. Refuses to run if the file is missing or has a different format (fail-closed)."""
     try:
-        value = json.loads(PACKET_ASK_VERSION_FILE.read_text()).get('version')
+        # Resolved at call time so a relocated or patched ROOT (tests, CI) is honored, unlike the import-time constant.
+        value = json.loads((ROOT / 'state/packet-ask-version.json').read_text()).get('version')
     except (OSError, ValueError, AttributeError):
         raise GuardError('state/packet-ask-version.json is missing; the packet-ask adapter has no reviewed version.') from None
     if not isinstance(value, str) or not all(part.isdigit() for part in value.split('.')) or value.count('.') != 2:

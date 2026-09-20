@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import plistlib
+import struct
 import sys
 import tempfile
 import unittest
@@ -162,6 +164,162 @@ class ImportWithoutZcodeTests(unittest.TestCase):
             self.assertEqual(json.loads((root / 'state/opencode-profile.json').read_text())['domains'], ['api.deepseek.com:443'])
             self.assertFalse((home / '.zcode').exists())
             self.assertIn('Zcode is not set up', out.getvalue())
+
+
+class ZcodeRoutingTests(unittest.TestCase):
+    HOST = 'ZCODE_AGENT_SERVER_COMMAND ZCODE_AGENT_SERVER_ARGS_JSON resolveDefaultZCodeAgentCommand workspacePath'
+    DESKTOP = 'createWebRemoteControlManager relayWsUrl'
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def app(self, name='ZCode.app', host=None, desktop=None, extra=None, overrides=None):
+        app = self.root / name
+        resources = app / 'Contents/Resources'
+        (resources / 'glm').mkdir(parents=True)
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleShortVersionString': 'test'}))
+        (resources / 'glm/zcode.cjs').write_bytes(b'// synthetic CLI')
+        files = {'out/host/index.js': self.HOST if host is None else host,
+                 'out/main/index.js': self.DESKTOP if desktop is None else desktop}
+        files.update(extra or {})
+        index, payload = {'files': {}}, bytearray()
+        for path, text in files.items():
+            node = index
+            parts = path.split('/')
+            for part in parts[:-1]:
+                node = node['files'].setdefault(part, {'files': {}})
+            body = text.encode()
+            node['files'][parts[-1]] = (overrides or {}).get(path, {'size': len(body), 'offset': str(len(payload))})
+            payload.extend(body)
+        raw = json.dumps(index, separators=(',', ':')).encode()
+        padding = bytes((-len(raw)) % 4)
+        header = struct.pack('<4I', 4, len(raw) + len(padding) + 8,
+                             len(raw) + len(padding) + 4, len(raw))
+        (resources / 'app.asar').write_bytes(header + raw + padding + payload)
+        return app
+
+    def candidate(self, app):
+        with patch.object(check, 'APP', app):
+            return check.zcode_candidate(app)
+
+    def test_monolithic_bundle_keeps_existing_hash_contract(self):
+        app = self.app()
+        self.assertEqual(self.candidate(app), {'version': 'test',
+            'asarSha256': check.digest(app / 'Contents/Resources/app.asar'),
+            'agentSha256': check.digest(app / 'Contents/Resources/glm/zcode.cjs')})
+
+    def test_static_chunk_contains_moved_backend_routing(self):
+        app = self.app(host='import { route as r } from "./chunk-ABC.js"; r();',
+                       extra={'out/host/chunk-ABC.js': self.HOST})
+        self.assertEqual(self.candidate(app)['version'], 'test')
+
+    def test_transitive_imports_and_cycle_are_bounded_by_unique_modules(self):
+        app = self.app(host='import{r}from"./a.js";import{q}from"./a.js";', extra={
+            'out/host/a.js': 'import "./b.js";',
+            'out/host/b.js': 'import "./index.js";' + self.HOST})
+        self.assertEqual(self.candidate(app)['version'], 'test')
+
+    def test_split_desktop_relay_is_checked_separately(self):
+        app = self.app(desktop="import './chunk-relay.js';", extra={'out/main/chunk-relay.js': self.DESKTOP})
+        self.assertEqual(self.candidate(app)['version'], 'test')
+
+    def test_bare_runtime_import_does_not_hide_local_import(self):
+        app = self.app(host='/* banner */\nimport fs from "node:fs";\nimport * as r from "./routing.js"\nr();',
+                       extra={'out/host/routing.js': self.HOST})
+        self.assertEqual(self.candidate(app)['version'], 'test')
+
+    def test_directive_and_default_plus_named_import(self):
+        app = self.app(host='"use strict"; import r,{helper as h}from"./routing.js";r();',
+                       extra={'out/host/routing.js': self.HOST})
+        self.assertEqual(self.candidate(app)['version'], 'test')
+
+    def test_minified_namespace_imports(self):
+        app = self.app(host='import*as fs from"node:fs";import r,*as ns from"./routing.js";',
+                       extra={'out/host/routing.js': self.HOST})
+        self.assertEqual(self.candidate(app)['version'], 'test')
+
+    def test_unreferenced_or_nonstatic_decoy_does_not_satisfy_routing(self):
+        for number, source in enumerate(('const x = 1;', '// import "./decoy.js";\nconst x=1;',
+                '/* import "./decoy.js"; */ const x=1;',
+                'const text = "import \'./decoy.js\';";', 'import("./decoy.js");')):
+            with self.subTest(source=source):
+                app = self.app(str(number), host=source, extra={'out/host/decoy.js': self.HOST})
+                with self.assertRaisesRegex(ValueError, 'backend routing'):
+                    self.candidate(app)
+
+    def test_required_markers_cannot_be_assembled_from_unrelated_modules(self):
+        app = self.app(host='import "./a.js";import "./b.js";', extra={
+            'out/host/a.js': 'ZCODE_AGENT_SERVER_COMMAND ZCODE_AGENT_SERVER_ARGS_JSON',
+            'out/host/b.js': 'resolveDefaultZCodeAgentCommand workspacePath'})
+        with self.assertRaisesRegex(ValueError, 'backend routing'):
+            self.candidate(app)
+
+    def test_missing_referenced_chunk_fails_even_if_entry_has_markers(self):
+        app = self.app(host='import "./missing.js";' + self.HOST)
+        with self.assertRaises(ValueError):
+            self.candidate(app)
+
+    def test_parent_traversal_and_escaped_specifier_are_rejected(self):
+        for number, specifier in enumerate(('../outside.js', './nested/../routing.js', './%2e%2e/outside.js')):
+            with self.subTest(specifier=specifier):
+                app = self.app(str(number), host='import "' + specifier + '";' + self.HOST)
+                with self.assertRaises(ValueError):
+                    self.candidate(app)
+
+    def test_link_unpacked_and_out_of_range_entries_are_rejected(self):
+        for number, entry in enumerate(({'link': '/outside', 'offset': '0', 'size': 12}, {'unpacked': True, 'size': 12},
+                {'offset': '-1', 'size': 12}, {'offset': '99999999', 'size': 12},
+                {'offset': '0', 'size': True})):
+            with self.subTest(entry=entry):
+                app = self.app(str(number), host='import "./routing.js";', extra={'out/host/routing.js': self.HOST},
+                               overrides={'out/host/routing.js': entry})
+                with self.assertRaises(ValueError):
+                    self.candidate(app)
+
+    def test_module_and_aggregate_byte_limits_fail_closed(self):
+        app = self.app(host='import "./routing.js";', extra={'out/host/routing.js': self.HOST})
+        for limit, value in (('_MAX_JS_MODULES', 1), ('_MAX_JS_BYTES', len(self.HOST))):
+            with self.subTest(limit=limit), patch.object(check, limit, value):
+                with self.assertRaisesRegex(ValueError, 'module budget'):
+                    self.candidate(app)
+
+    def test_truncated_archive_is_rejected(self):
+        app = self.app()
+        archive = app / 'Contents/Resources/app.asar'
+        archive.write_bytes(archive.read_bytes()[:12])
+        with self.assertRaises(ValueError):
+            self.candidate(app)
+
+    def test_explicit_app_is_used_instead_of_global_default(self):
+        default = self.app('default.app')
+        alternate = self.app('alternate.app', host='no routing here')
+        with patch.object(check, 'APP', default):
+            with self.assertRaisesRegex(ValueError, 'backend routing'):
+                check.zcode_candidate(alternate)
+
+    def test_desktop_relay_markers_are_still_required(self):
+        app = self.app(desktop='const noRelay = true;')
+        with self.assertRaisesRegex(ValueError, 'mobile relay routing'):
+            self.candidate(app)
+
+    def test_doctor_rejects_hash_drift_without_rewriting_baseline(self):
+        app = self.app(host='import "./routing.js";', extra={'out/host/routing.js': self.HOST})
+        current = {'zcode': self.candidate(app)}
+        state = self.root / 'state'
+        state.mkdir()
+        baseline = state / 'compatibility.json'
+        baseline.write_text(json.dumps(current))
+        before = baseline.read_bytes()
+        with patch.object(g, 'ROOT', self.root), patch.object(check, 'candidate', return_value=current), \
+             patch.object(g, 'riskgate_policy', return_value=self.root / 'missing-policy'), \
+             patch.object(g, 'development_options', return_value={'devPorts': [], 'packageDomains': []}), \
+             patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(g.doctor(), 0)
+            current['zcode']['asarSha256'] = 'changed'
+            self.assertEqual(g.doctor(), 2)
+        self.assertEqual(baseline.read_bytes(), before)
 
 
 if __name__ == '__main__':

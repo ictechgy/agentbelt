@@ -1,6 +1,7 @@
 """Offline candidate verification. No model request or credential import."""
 import hashlib
 import json
+import re
 import os
 from pathlib import Path
 import plistlib
@@ -32,20 +33,110 @@ def digest(path):
     return result.hexdigest()
 
 
-def asar_text(path):
-    with (APP / 'Contents/Resources/app.asar').open('rb') as stream:
-        header = stream.read(16)
-        size = struct.unpack('<I', header[12:16])[0]
-        if size > 32 * 1024 * 1024:
-            raise ValueError('invalid application index')
-        index = json.loads(stream.read(size))
-        node = index
+_MAX_JS_MODULES = 64
+_MAX_JS_BYTES = 32 * 1024 * 1024
+_JS_TRIVIA = re.compile(r'(?:\s+|//[^\r\n]*|/\*[\s\S]*?\*/)*')
+_JS_BINDING = r'[A-Za-z_$][\w$]*'
+_JS_NAMED = r'\{[^{};]*\}'
+_JS_NAMESPACE = r'\*\s*as\s+' + _JS_BINDING
+_JS_IMPORT = re.compile(
+    r'''import(?=[\s{'"*])\s*(?:'''
+    + r'(?:' + _JS_NAMED + '|' + _JS_NAMESPACE + r')\s*from\s*|'
+    + _JS_BINDING + r'\s+from\s*|'
+    + _JS_BINDING + r'\s*,\s*(?:' + _JS_NAMED + '|' + _JS_NAMESPACE + r')\s*from\s*'
+    + r''')?(?P<quote>['"])(?P<specifier>[^'"\\\r\n]+)(?P=quote)[ \t]*(?:;|(?=\r?\n|\Z))''')
+_JS_STRICT = re.compile(r'''(['"])use strict\1[ \t]*(?:;|(?=\r?\n|\Z))''')
+_JS_RELATIVE = re.compile(r'\./(?:[A-Za-z0-9_$.-]+/)*[A-Za-z0-9_$.-]+\.js')
+
+
+def _asar_index(stream):
+    header = stream.read(16)
+    if len(header) != 16:
+        raise ValueError('invalid application index')
+    tag, header_size, payload_size, size = struct.unpack('<4I', header)
+    start, end = 8 + header_size, os.fstat(stream.fileno()).st_size
+    if (tag != 4 or size > 32 * 1024 * 1024 or payload_size + 4 != header_size
+            or not 0 <= start - 16 - size <= 3 or start > end):
+        raise ValueError('invalid application index')
+    return json.loads(stream.read(size)), start, end
+
+
+def _asar_text(stream, index, start, end, path):
+    node = index
+    try:
         for name in path.split('/'):
             node = node['files'][name]
-        if node.get('unpacked') or node['size'] > 16 * 1024 * 1024:
-            raise ValueError('unexpected application entry')
-        stream.seek(8 + struct.unpack('<I', header[4:8])[0] + int(node['offset']))
-        return stream.read(node['size']).decode('utf-8')
+        size, offset = node['size'], node['offset']
+    except (KeyError, TypeError):
+        raise ValueError('unexpected application entry') from None
+    if (node.get('unpacked') or 'link' in node or type(size) is not int
+            or not 0 <= size <= 16 * 1024 * 1024 or not isinstance(offset, str)
+            or not re.fullmatch(r'[0-9]{1,20}', offset)):
+        raise ValueError('unexpected application entry')
+    offset = int(offset)
+    if start + offset + size > end:
+        raise ValueError('unexpected application entry')
+    stream.seek(start + offset)
+    body = stream.read(size)
+    if len(body) != size:
+        raise ValueError('truncated application entry')
+    return body.decode('utf-8')
+
+
+def asar_text(path, app=None):
+    app = Path(app) if app is not None else APP
+    with (app / 'Contents/Resources/app.asar').open('rb') as stream:
+        return _asar_text(stream, *_asar_index(stream), path)
+
+
+def _module_imports(text):
+    """Read the bundler's leading static ESM imports, not arbitrary JS strings.
+
+    Unsupported syntax is left for manual review when required markers cannot
+    be found. This is a compatibility heuristic, not a JavaScript evaluator.
+    """
+    cursor = 0
+    while True:
+        cursor = _JS_TRIVIA.match(text, cursor).end()
+        directive = _JS_STRICT.match(text, cursor)
+        if directive:
+            cursor = directive.end()
+            continue
+        match = _JS_IMPORT.match(text, cursor)
+        if not match:
+            return
+        cursor = match.end()
+        specifier = match.group('specifier')
+        if not specifier.startswith('.'):
+            continue  # Built-in and package imports are not ASAR chunk evidence.
+        if not _JS_RELATIVE.fullmatch(specifier) or any(p in {'.', '..'} for p in specifier[2:].split('/')):
+            raise ValueError('unexpected application module import')
+        yield specifier[2:]
+
+
+def _bundled_texts(app, entry):
+    """Follow only linked, packed JS in the entry's component, with finite limits."""
+    texts, pending, discovered, total = [], [entry], {entry}, 0
+    if _MAX_JS_MODULES < 1:
+        raise ValueError('application module budget exceeded')
+    with (app / 'Contents/Resources/app.asar').open('rb') as stream:
+        index, start, end = _asar_index(stream)
+        while pending:
+            path = pending.pop()
+            text = _asar_text(stream, index, start, end, path)
+            total += len(text.encode('utf-8'))
+            if total > _MAX_JS_BYTES:
+                raise ValueError('application module budget exceeded')
+            texts.append(text)
+            parent = path.rsplit('/', 1)[0]
+            for name in _module_imports(text):
+                target = parent + '/' + name
+                if target not in discovered:
+                    if len(discovered) >= _MAX_JS_MODULES:
+                        raise ValueError('application module budget exceeded')
+                    discovered.add(target)
+                    pending.append(target)
+    return texts
 
 
 def autoclaw_candidate(app=AUTOCLAW_APP):
@@ -119,19 +210,20 @@ def opencode_candidate():
 def zcode_candidate(app=None):
     """Version and hashes of the installed Zcode desktop app, or None when it is not installed.
 
-    The routing strings are checked so that an app update which moves the agent-server hook is noticed before launch.
+    Required markers must remain together in an entry or its linked static chunks.
+    Full archive/CLI hashes still determine whether the reviewed baseline matches.
     """
     app = Path(app) if app is not None else APP
     if not (app / 'Contents/Info.plist').is_file():
         return None
     with (app / 'Contents/Info.plist').open('rb') as stream:
         zcode_version = plistlib.load(stream)['CFBundleShortVersionString']
-    host = asar_text('out/host/index.js')
-    desktop = asar_text('out/main/index.js')
-    if not all(value in host for value in ['ZCODE_AGENT_SERVER_COMMAND', 'ZCODE_AGENT_SERVER_ARGS_JSON',
-                                          'resolveDefaultZCodeAgentCommand', 'workspacePath']):
+    host = _bundled_texts(app, 'out/host/index.js')
+    desktop = _bundled_texts(app, 'out/main/index.js')
+    if not any(all(value in text for value in ['ZCODE_AGENT_SERVER_COMMAND', 'ZCODE_AGENT_SERVER_ARGS_JSON',
+                                              'resolveDefaultZCodeAgentCommand', 'workspacePath']) for text in host):
         raise ValueError('Zcode backend routing needs review')
-    if not all(value in desktop for value in ['createWebRemoteControlManager', 'relayWsUrl']):
+    if not any(all(value in text for value in ['createWebRemoteControlManager', 'relayWsUrl']) for text in desktop):
         raise ValueError('Zcode mobile relay routing needs review')
     return {'version': zcode_version,
             'asarSha256': digest(app / 'Contents/Resources/app.asar'),

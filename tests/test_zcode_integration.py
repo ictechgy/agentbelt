@@ -20,8 +20,10 @@ import agentbelt as g
 from pathlib import Path
 work=Path(sys.argv[2])
 def prepare(home,env):
-    g.private_dir(g.private_dir(home/'.zcode')/'cli')
-    env.update({'ZCODE_HOME':str(home/'.zcode'),'AGENTBELT_BACKEND':'zcode-v1','AGENTBELT_BOOTSTRAP':'zcode'})
+    zh=g.private_dir(home/'.zcode');g.private_dir(zh/'cli')
+    v2=g.private_dir(zh/'v2');builtin=v2/'zcode-builtin.json'
+    g.write_private_file(v2,'zcode-builtin.json',Path('/Applications/ZCode.app/Contents/Resources/config/provider/zcode-builtin.json').read_text())
+    env.update({'ZCODE_HOME':str(zh),'AGENTBELT_BACKEND':'zcode-v1','AGENTBELT_BOOTSTRAP':'zcode','ZCODE_BUILTIN_PROVIDER_CONFIG_FILE':str(builtin),'ZCODE_PERSONAL_PROVIDER_CONFIG_FILE':str(v2/'provider_config.json')})
 reads=['/Applications/ZCode.app',g.ROOT/'agentbelt.py',g.ROOT/'zcode_hook.py',g.ROOT/'riskgate_bridge.py',g.ROOT/'vendor',g.ROOT/'state/zcode-agent-config.json']
 sys.exit(g.run_confined('zcode-protocol-test',work,[str(g.NODE),'/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs','app-server','--stdio','--surface','desktop'],extra_reads=reads,prepare_home=prepare,private_sockets=True,read_only_home_paths=['.zcode/cli/config.json'],ephemeral=True))
 """
@@ -33,7 +35,7 @@ sys.exit(g.run_confined('zcode-protocol-test',work,[str(g.NODE),'/Applications/Z
                     except ValueError: pass
             thread=threading.Thread(target=read,daemon=True);thread.start()
             try:
-                request={'id':1,'method':'workspace/readState','params':{'workspace':{'workspacePath':tmp,'workspaceKey':tmp}}}
+                request={'id':1,'method':'workspace/readPresentation','params':{'workspace':{'workspacePath':tmp,'workspaceKey':tmp}}}
                 process.stdin.write(json.dumps(request)+'\n');process.stdin.flush()
                 import time
                 deadline=time.monotonic()+20
@@ -44,7 +46,7 @@ sys.exit(g.run_confined('zcode-protocol-test',work,[str(g.NODE),'/Applications/Z
                 self.assertIsNotNone(reply)
                 self.assertNotIn('error',reply)
                 self.assertIn('result',reply)
-                self.assertEqual(reply['result']['settings']['permission']['mode'],'build')
+                self.assertEqual(reply['result']['mode'],'build')
             finally:
                 process.stdin.close()
                 try:process.wait(timeout=5)

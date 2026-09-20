@@ -83,9 +83,9 @@ async function main() {
   (global-name "com.apple.CoreServices.coreservicesd")
   (global-name "com.apple.coreservices.appleevents"))
 (deny appleevent-send)
-; Clipboard. Every reader and writer (NSPasteboard via the bundled native binding,
-; pbcopy/pbpaste, osascript JXA) goes through the pasteboard server, so denying the
-; service name closes all of them at once. SRT's default-deny already leaves it closed;
+; Native clipboard readers/writers (NSPasteboard, pbcopy/pbpaste, JXA) use this
+; service. terminal_proxy separately mediates the private PTY, including OSC 52.
+; SRT's default-deny already leaves the native service closed;
 ; this explicit rule keeps it closed even if a runtime upgrade widens the allow list.
 ; Universal Clipboard (Handoff) relays are covered by the prefix.
 (deny mach-lookup
@@ -175,7 +175,9 @@ async function main() {
       argv[index + 2] += '\n(allow network-bind network-inbound (local ip "localhost:' + port + '"))\n';
       argv[index + 2] += '\n(allow network-outbound (remote ip "localhost:' + port + '"))\n';
     }
-    // No inherited file descriptors beyond stdin/stdout/stderr.
+    // terminal_proxy has detached the real controlling terminal and substituted
+    // private PTY descriptors wherever a terminal is needed. No real host TTY
+    // or other inherited descriptor is passed beyond stdin/stdout/stderr.
     diagnosticPhase = 'child-spawn';
     const child = spawn('/usr/bin/env', argv.slice(1), {stdio: 'inherit', env: process.env});
     const forward = signal => child.kill(signal);

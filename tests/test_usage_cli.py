@@ -23,8 +23,11 @@ class ProfileTests(unittest.TestCase):
         self.assertRegex(profile['cliVersion'], r'^\d+\.\d+\.\d+$')
 
     def test_workspace_and_home_are_guard_owned(self):
-        self.assertEqual(usage_cli.usage_workspace().parent, ROOT / 'state')
-        self.assertEqual(usage_cli.usage_home().parents[1], ROOT / 'state/homes')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(usage_cli, 'ROOT', root):
+                self.assertEqual(usage_cli.usage_workspace().parent, root / 'state')
+                self.assertEqual(usage_cli.usage_home().parents[1], root / 'state/homes')
 
 
 class WiringTests(unittest.TestCase):
@@ -41,11 +44,15 @@ class WiringTests(unittest.TestCase):
             return 0
         # Write a synthetic entry file so the wiring can be checked even when bl is not installed in the real isolated home.
         self.entry_dir = tempfile.TemporaryDirectory(prefix='usage-wiring-', dir=Path.home())
+        root = Path(self.entry_dir.name)
         entry = Path(self.entry_dir.name) / 'bailian-cli/dist/bailian.mjs'
         entry.parent.mkdir(parents=True)
         entry.write_text('// synthetic\n')
         self.patches = [patch.object(g, 'run_confined', fake_run_confined),
-                        patch.object(usage_cli.subprocess, 'call', fake_call),
+                        patch.object(g.subprocess, 'call', fake_call),
+                        patch.object(usage_cli, 'ROOT', root),
+                        patch.object(usage_cli, 'load_profile', usage_cli.default_profile),
+                        patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': sorted(g.PUBLIC_PACKAGE_DOMAINS)}),
                         patch.object(usage_cli, 'bl_entry', lambda home: entry)]
         for item in self.patches:
             item.start()
@@ -93,20 +100,24 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(g.main(['usage', '--', 'auth', 'status']), 0)
         self.assertEqual(self.calls[0]['command'][2:], ['auth', 'status'])
 
-    def test_setup_installs_pinned_cli_then_logs_in_on_host_with_isolated_config(self):
+    def test_setup_installs_then_logs_in_inside_the_same_isolation(self):
         self.assertEqual(g.main(['usage', 'setup']), 0)
         install = self.calls[0]
         domains = install['positional'][0] if install['positional'] else install['domains']
         self.assertIn('registry.npmjs.org:443', domains)
         joined = ' '.join(map(str, install['command']))
         self.assertIn('bailian-cli@' + usage_cli.default_profile()['cliVersion'], joined)
-        self.assertEqual(len(self.host_calls), 1)
-        login = self.host_calls[0]
+        self.assertEqual(self.host_calls, [])
+        self.assertEqual(len(self.calls), 2)
+        login = self.calls[1]
         self.assertEqual(login['command'][2:5], ['auth', 'login', '--console'])
         home = usage_cli.usage_home()
-        self.assertEqual(login['env']['HOME'], str(home))
-        self.assertEqual(login['env']['BAILIAN_CONFIG_DIR'], str(home / '.bailian'))
-        self.assertNotIn('CLAUDE_CONFIG_DIR', login['env'])
+        self.assertEqual(login['mode'], 'usage')
+        self.assertEqual(login['extra_env']['BAILIAN_CONFIG_DIR'], str(home / '.bailian'))
+        self.assertTrue(login['loopback_port'])
+        self.assertFalse(login['github'])
+        self.assertFalse(install['github'])
+        self.assertFalse(login.get('loopback_all', False))
 
     def test_query_before_setup_explains_what_to_run(self):
         with patch.object(usage_cli, 'bl_entry', lambda home: home / 'missing.mjs'):

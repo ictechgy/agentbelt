@@ -194,6 +194,7 @@ class LaunchWiringTests(unittest.TestCase):
                      patch.object(g, 'ROOT', root), \
                      patch.object(g, 'run_confined', fake_run_confined), \
                      patch.object(g, 'verify_opencode_binary', lambda: None), \
+                     patch.object(g, 'stage_opencode_binary', lambda: g.OPENCODE), \
                      patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \
                      patch.object(g, 'load_opencode_profile', lambda: {'domains': []}), \
                      patch.object(g, 'orca_integration', lambda: (plugin, coordinates(orca.port))):

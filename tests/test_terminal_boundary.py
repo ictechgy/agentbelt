@@ -31,6 +31,12 @@ for name,fd in [('stdin',0),('controlling',None)]:
 try:
  other=os.open(sys.argv[1],os.O_RDWR);os.close(other);result['other_tty']='ALLOWED'
 except PermissionError:result['other_tty']='DENIED'
+try:
+ host=os.open(sys.argv[2],os.O_RDWR);os.close(host);result['host_tty']='ALLOWED'
+except PermissionError:result['host_tty']='DENIED'
+sequence=b'\\x1b]52;c;U1lOVEhFVElD\\x07'
+for fd in (0,1,2):os.write(fd,sequence)
+fd=os.open('/dev/tty',os.O_WRONLY);os.write(fd,sequence);os.close(fd)
 print('GUARD_TTY_RESULT='+json.dumps(result),flush=True)
 '''
         with tempfile.TemporaryDirectory(prefix='guard-tty-test-', dir=Path.home()) as work:
@@ -42,7 +48,7 @@ print('GUARD_TTY_RESULT='+json.dumps(result),flush=True)
                 os.close(other_slave)
                 os.chdir(work)
                 os.execv('/usr/bin/python3', ['/usr/bin/python3', '-I', str(ROOT / 'agentbelt.py'),
-                         'exec', work, '--', '/usr/bin/python3', '-I', '-c', code, other_path])
+                         'exec', work, '--', '/usr/bin/python3', '-I', '-c', code, other_path, os.ttyname(0)])
             output = bytearray()
             status = None
             deadline = time.monotonic() + 15
@@ -61,11 +67,16 @@ print('GUARD_TTY_RESULT='+json.dumps(result),flush=True)
                         status = value
                         break
                 if status is None:
-                    done, value = os.waitpid(pid, os.WNOHANG)
-                    if done:
-                        status = value
-                    else:
-                        os.killpg(pid, signal.SIGKILL)
+                    # PTY EOF can precede process reaping on Darwin.
+                    grace = time.monotonic() + .5
+                    while time.monotonic() < grace:
+                        done, value = os.waitpid(pid, os.WNOHANG)
+                        if done:
+                            status = value
+                            break
+                        time.sleep(.01)
+                    if status is None:
+                        os.kill(pid, signal.SIGKILL)
                         _, status = os.waitpid(pid, 0)
             finally:
                 os.close(master)
@@ -79,6 +90,9 @@ print('GUARD_TTY_RESULT='+json.dumps(result),flush=True)
             self.assertEqual(result['stdin_injection'], 'DENIED')
             self.assertEqual(result['controlling_injection'], 'DENIED')
             self.assertEqual(result['other_tty'], 'DENIED')
+            self.assertEqual(result['host_tty'], 'DENIED')
+            self.assertNotIn(']52;', raw)
+            self.assertNotIn('U1lOVEhFVElD', raw)
 
 
 if __name__ == '__main__':

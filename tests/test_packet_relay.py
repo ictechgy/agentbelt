@@ -1,10 +1,12 @@
 """Regression for the relay where the safecode supervisor runs packet-ask on behalf of the sandbox."""
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import re
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -18,7 +20,9 @@ from adapters import packet_relay
 class VersionGateTests(unittest.TestCase):
     def test_pinned_version_lives_only_in_the_state_file(self):
         """When the gate was a source constant, every promotion required editing guard code, and once 0.9.0 was left behind and it failed."""
-        pinned = json.loads((ROOT / 'state/packet-ask-version.json').read_text())['version']
+        # Guard tests may inspect a candidate under the private promotion
+        # capability while the canonical public pin remains unavailable.
+        pinned = g.packet_ask_pinned_version()
         self.assertRegex(pinned, r'^\d+\.\d+\.\d+$')
         self.assertEqual(g.packet_ask_pinned_version(), pinned)
         self.assertNotRegex((ROOT / 'agentbelt.py').read_text(), r"PACKET_ASK_VERSION = '\d")
@@ -69,6 +73,29 @@ class RequestValidationTests(unittest.TestCase):
             packet_relay.validate_request({'question': 'q'}, self.workspace, {})
         with self.assertRaises(g.GuardError):
             packet_relay.validate_request({'files': ['a.py'], 'question': 'q', 'diff': 'x; rm -rf /'}, self.workspace, {})
+        with self.assertRaisesRegex(g.GuardError, 'cannot combine'):
+            packet_relay.validate_request({'files': ['a.py'], 'question': 'q', 'diff': 'HEAD~1..HEAD'}, self.workspace, {})
+
+    def test_diff_only_request_is_preserved_for_the_collector(self):
+        request = packet_relay.validate_request(
+            {'question': 'what changed?', 'diff': 'HEAD~1..HEAD', 'timeout': 30,
+             'json': True},
+            self.workspace,
+            {},
+        )
+        self.assertEqual(request['arguments'][:4], ['--use-keychain', 'review', '--provider', 'glm'])
+        self.assertIn('--diff', request['arguments'])
+        self.assertNotIn('--files', request['arguments'])
+        self.assertIn('--timeout', request['arguments'])
+        self.assertIn('--json', request['arguments'])
+
+    def test_file_relay_rejects_progress_with_direct_cli_guidance(self):
+        with self.assertRaisesRegex(g.GuardError, 'packet-ask-safe'):
+            packet_relay.validate_request(
+                {'files': ['a.py'], 'question': 'review', 'progress': True},
+                self.workspace,
+                {},
+            )
 
 
 class ProviderTests(unittest.TestCase):
@@ -80,14 +107,14 @@ class ProviderTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_default_provider_is_glm_and_qwen_builds_a_read_only_prompt(self):
+    def test_default_provider_is_glm_and_qwen_uses_the_same_collector_shape(self):
         glm = packet_relay.validate_request({'files': ['a.py'], 'question': 'q'}, self.workspace, {})
         self.assertEqual(glm['provider'], 'glm')
         qwen = packet_relay.validate_request({'files': ['a.py'], 'question': 'why?', 'provider': 'qwen'}, self.workspace, {})
         self.assertEqual(qwen['provider'], 'qwen')
-        self.assertIn('a.py', qwen['prompt'])
-        self.assertIn('why?', qwen['prompt'])
-        self.assertNotIn('arguments', qwen)
+        self.assertIn('a.py', qwen['arguments'])
+        self.assertEqual(qwen['question'], 'why?')
+        self.assertIn('prompt', qwen)
         with self.assertRaises(g.GuardError):
             packet_relay.validate_request({'files': ['a.py'], 'question': 'q', 'provider': 'gpt'}, self.workspace, {})
 
@@ -106,41 +133,113 @@ class ProviderTests(unittest.TestCase):
         tools = config['agent']['review']['tools']
         for name in ['bash', 'edit', 'write', 'patch', 'webfetch', 'websearch', 'task', 'todowrite', 'skill']:
             self.assertIs(tools.get(name), False, name)
-        self.assertEqual(config['permission'], base['permission'])
+        self.assertEqual(config['permission'], {'*': 'deny'})
         self.assertEqual(config['enabled_providers'], ['x'])
         self.assertEqual(config['agent']['review']['model'], g.DEFAULT_REVIEW_MODEL)
         for name in ['read', 'glob', 'grep', 'list']:
-            self.assertEqual(config['agent']['review']['permission'][name], 'allow', name)
+            self.assertIs(config['agent']['review']['tools'].get(name), False, name)
+        self.assertEqual(config['agent']['review']['permission'], {'*': 'deny'})
         self.assertEqual(g.review_config(base, 'p/m')['agent']['review']['model'], 'p/m')
         with self.assertRaises(g.GuardError):
             g.review_config(base, 'bad model; rm')
 
-    def test_opencode_review_mode_launches_the_read_only_agent_in_its_own_home(self):
-        captured = {}
+    def test_qwen_host_runner_uses_the_shared_staged_pipeline(self):
+        from adapters import packet_pipeline
+        events = []
+        prepared = {
+            'arguments': ['--use-keychain', 'review', '--provider', 'glm', '--files', 'a.py', '--question-stdin',
+                          '--timeout', '30'],
+            'question': 'review this please',
+        }
 
-        def fake_run_confined(mode, workspace, command, *args, **kwargs):
-            captured.update(kwargs, mode=mode, workspace=workspace, command=command, positional=args)
+        @contextmanager
+        def shared_lock(_state):
+            events.append('lock-enter')
+            yield
+            events.append('lock-exit')
+
+        def fake_pipeline(*args, **kwargs):
+            events.append('pipeline')
+            if '--json' in args[0]:
+                kwargs['stdout'].write('{"part":{"type":"text","text":"synthetic qwen review"}}\n'.encode())
+            else:
+                kwargs['stdout'].write('synthetic qwen review'.encode())
             return 0
 
-        with patch.object(g, 'run_confined', fake_run_confined), \
-             patch.object(g, 'verify_opencode_binary', lambda: None), \
-             patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \
-             patch('sys.stdin', __import__('io').StringIO('review this please')):
-            (ROOT / 'state/opencode-auth.json').is_file() or self.skipTest('no opencode auth fixture')
-            self.assertEqual(g.main(['opencode-review', str(self.workspace)]), 0)
-        # A second run must not fail even when the config file already exists (O_EXCL regression).
-        with patch.object(g, 'run_confined', fake_run_confined), \
-             patch.object(g, 'verify_opencode_binary', lambda: None), \
-             patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}), \
-             patch('sys.stdin', __import__('io').StringIO('review this please')):
-            self.assertEqual(g.main(['opencode-review', str(self.workspace)]), 0)
-        self.assertEqual(captured['mode'], 'opencode-review')
-        self.assertEqual(captured['command'][-6:-1], ['run', '--agent', 'review', '--format', 'json'])
-        self.assertEqual(captured['command'][-1], 'review this please')
-        self.assertTrue(captured['protect_opencode_config'])
-        extra_env = captured['positional'][1] if len(captured['positional']) > 1 else captured['extra_env']
-        self.assertTrue(extra_env['OPENCODE_CONFIG'].endswith('opencode-review-config.json'))
-        self.assertNotIn('--auto', captured['command'])
+        with patch.object(packet_relay.packet_transaction, 'consumer', side_effect=shared_lock), \
+             patch.object(packet_pipeline, 'run', side_effect=fake_pipeline) as execute:
+            status, output, error = packet_relay.host_runner('qwen', prepared, self.workspace)
+        self.assertEqual((status, output, error), (0, 'synthetic qwen review', ''))
+        self.assertEqual(events, ['lock-enter', 'pipeline', 'lock-exit'])
+        execute.assert_called_once()
+        self.assertEqual(execute.call_args.kwargs['provider'], 'qwen')
+        self.assertTrue(execute.call_args.kwargs['use_keychain'])
+        self.assertEqual(execute.call_args.kwargs['question'], 'review this please')
+        self.assertEqual(execute.call_args.kwargs['operation_timeout'], 30)
+
+        prepared_json = dict(prepared, arguments=prepared['arguments'] + ['--json'])
+        with patch.object(packet_relay.packet_transaction, 'consumer', side_effect=shared_lock), \
+             patch.object(packet_pipeline, 'run', side_effect=fake_pipeline):
+            status, output, error = packet_relay.host_runner('qwen', prepared_json, self.workspace)
+        self.assertEqual((status, output, error), (0, '{"part":{"type":"text","text":"synthetic qwen review"}}\n', ''))
+
+    def test_host_runner_rejects_timeout_beyond_relay_lifetime_before_pipeline(self):
+        from adapters import packet_pipeline
+        prepared = {
+            'arguments': ['--use-keychain', 'review', '--provider', 'glm', '--files', 'a.py',
+                          '--question-stdin', '--timeout', str(packet_relay.DEFAULT_SETTINGS['timeoutSeconds'] + 1)],
+            'question': 'review this please',
+        }
+        with patch.object(packet_pipeline, 'run', side_effect=AssertionError('pipeline entered')):
+            status, output, error = packet_relay.host_runner('glm', prepared, self.workspace)
+        self.assertEqual(status, 1)
+        self.assertEqual(output, '')
+        self.assertIn('1800-second limit', error)
+
+    def test_shared_transaction_blocks_promotion_until_pipeline_returns(self):
+        from adapters import packet_pipeline, packet_transaction
+        prepared = {
+            'arguments': ['--use-keychain', 'review', '--provider', 'glm', '--files', 'a.py', '--question-stdin'],
+            'question': 'review this please',
+        }
+        attempted = threading.Event()
+        promoted = threading.Event()
+        threads = []
+        with tempfile.TemporaryDirectory(prefix='relay-transaction-') as raw:
+            state = Path(raw) / 'packet-ask-version.json'
+            state.write_text('{"version":"0.12.0"}\n')
+            state.chmod(0o600)
+            real_consumer = packet_transaction.consumer
+
+            @contextmanager
+            def temporary_consumer(_state):
+                with real_consumer(state):
+                    yield
+
+            def fake_pipeline(*args, **kwargs):
+                kwargs['stdout'].write('{"part":{"type":"text","text":"synthetic review"}}\n'.encode())
+
+                def promote():
+                    attempted.set()
+                    with packet_transaction.promotion(state, '0.13.0'):
+                        promoted.set()
+
+                worker = threading.Thread(target=promote)
+                threads.append(worker)
+                worker.start()
+                self.assertTrue(attempted.wait(1))
+                time.sleep(0.05)
+                self.assertFalse(promoted.is_set())
+                return 0
+
+            with patch.object(packet_relay.packet_transaction, 'consumer', side_effect=temporary_consumer), \
+                 patch.object(packet_pipeline, 'run', side_effect=fake_pipeline):
+                status, output, error = packet_relay.host_runner('qwen', prepared, self.workspace)
+            for worker in threads:
+                worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual((status, output, error), (0, '{"part":{"type":"text","text":"synthetic review"}}\n', ''))
+        self.assertTrue(promoted.is_set())
 
 
 class ChannelTests(unittest.TestCase):
@@ -161,6 +260,8 @@ class ChannelTests(unittest.TestCase):
         question = prepared.get('question') or prepared.get('prompt')
         if question == 'fail':
             return 2, '', 'synthetic provider failure'
+        if question == 'initfail':
+            return 125, '', 'synthetic supervisor init failure'
         return 0, 'REVIEW(' + provider + '): ' + question, ''
 
     def relay(self, **settings):
@@ -222,6 +323,15 @@ class ChannelTests(unittest.TestCase):
             self.assertIn('limit', self.wait_for(requests / 'two.error.txt'))
         self.assertEqual(len(self.seen), 1)
 
+    def test_sandbox_init_failure_does_not_spend_the_hourly_budget(self):
+        with self.relay(maxPerHour=1) as relay:
+            relay.prepare(self.home, {'PATH': ''})
+            requests = self.home / 'tmp/packet-requests'
+            (requests / 'one.json').write_text(json.dumps({'files': ['a.py'], 'question': 'initfail'}))
+            self.assertIn('exited 125', self.wait_for(requests / 'one.error.txt'))
+            (requests / 'two.json').write_text(json.dumps({'files': ['a.py'], 'question': 'b'}))
+            self.assertEqual('REVIEW(glm): b', self.wait_for(requests / 'two.result.md'))
+
     def test_helper_script_works_from_inside_the_real_sandbox(self):
         with self.relay() as relay:
             (self.workspace / 'p.sh').write_text(
@@ -254,6 +364,7 @@ class SafecodeWiringTests(unittest.TestCase):
             try:
                 with patch.object(g, 'run_confined', fake_run_confined), \
                      patch.object(g, 'verify_opencode_binary', lambda: None), \
+                     patch.object(g, 'stage_opencode_binary', lambda: g.OPENCODE), \
                      patch.object(g, 'orca_integration', lambda: None), \
                      patch.object(g, 'packet_relay_settings', lambda: {'enabled': True, 'maxPerHour': 2}), \
                      patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}):
@@ -286,6 +397,7 @@ class ZcodeWiringTests(unittest.TestCase):
             try:
                 with patch.object(g, 'run_confined', fake_run_confined), \
                      patch.object(g, 'verify_zcode_binary', lambda: None), \
+                     patch.object(g, 'stage_opencode_binary', lambda: g.OPENCODE), \
                      patch.object(g, 'riskgate_policy', lambda: ROOT / 'state/riskgate.json'), \
                      patch.object(g, 'packet_relay_settings', lambda: {'enabled': True}), \
                      patch.object(g, 'development_options', lambda: {'devPorts': [], 'packageDomains': []}):

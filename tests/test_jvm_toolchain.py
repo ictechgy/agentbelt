@@ -61,7 +61,7 @@ class LoopbackGrantTests(unittest.TestCase):
         def spy(*args, **kwargs):
             captured['policy'] = original(*args, **kwargs); return captured['policy']
         with tempfile.TemporaryDirectory(prefix='lb-', dir=Path.home()) as tmp, patch.object(g, 'sandbox_policy', spy), \
-             patch.object(g.subprocess, 'call', return_value=0):
+             patch('terminal_proxy.run', return_value=0):
             g.run_confined('exec', Path(tmp), ['/bin/true'], ephemeral=True)
             self.assertFalse(captured['policy']['network']['allowLocalBinding'])
             g.run_confined('exec', Path(tmp), ['/bin/true'], ephemeral=True, loopback_all=True)
@@ -135,7 +135,7 @@ class GradleKeystoreGrantTests(unittest.TestCase):
         captured = {}
         def fake_call(argv, **kwargs):
             captured['env'] = kwargs.get('env', {}); return 0
-        with tempfile.TemporaryDirectory(prefix='ks-', dir=Path.home()) as tmp, patch.object(g.subprocess, 'call', fake_call):
+        with tempfile.TemporaryDirectory(prefix='ks-', dir=Path.home()) as tmp, patch('terminal_proxy.run', fake_call):
             work = Path(tmp)
             g.run_confined('exec', work, ['/bin/true'], ephemeral=True)
             self.assertNotIn('AGENTBELT_GRADLE_KEYSTORE_ROOT', captured['env'])

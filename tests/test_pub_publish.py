@@ -96,6 +96,7 @@ class SafecodeWiringTests(unittest.TestCase):
             try:
                 with patch.object(g, 'run_confined', fake_run_confined), \
                      patch.object(g, 'verify_opencode_binary', lambda: None), \
+                     patch.object(g, 'stage_opencode_binary', lambda: g.OPENCODE), \
                      patch.object(g, 'orca_integration', lambda: None), \
                      patch.object(g, 'packet_relay_settings', lambda: None), \
                      patch.object(g, 'pub_publish_settings', lambda: grant(Path(tmp).resolve())), \

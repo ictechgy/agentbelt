@@ -71,7 +71,8 @@ OPENCODE = Path(_PATHS.get('opencode') or OWNER_HOME / '.opencode/bin/opencode')
 AUTOCLAW_APP = Path(_PATHS.get('autoclawApp') or '/Applications/AutoClaw.app')
 AUTOCLAW_ZCODE = AUTOCLAW_APP / 'Contents/Resources/zcode/darwin-arm64/zcode'
 # The Zcode CLI reads the workspace `.zcode/config.json` / `zcode.json` (hooks and MCP included) and `.agents/mcp.json`.
-# If the child plants these it can turn off the PreToolUse hook, so both modes deny writes to them.
+# Both pre-existing and child-planted settings can replace hooks or MCP. Guarded
+# backends use the supervisor's configuration and cannot read or write these.
 ZCODE_WORKSPACE_CONFIG_PATHS = ['.zcode', 'zcode.json', '.agents/mcp.json']
 PACKET_VENV = Path(_PATHS.get('packetAskVenv') or OWNER_HOME / '.local/share/uv/tools/packet-ask')
 PACKET_PYTHON = PACKET_VENV / 'bin/python'
@@ -86,6 +87,19 @@ PACKET_ASK_VERSION_FILE = ROOT / 'state/packet-ask-version.json'
 
 def packet_ask_pinned_version():
     """The reviewed packet-ask version. Refuses to run if the file is missing or has a different format (fail-closed)."""
+    # Guard tests run while the live candidate is protected by the exclusive
+    # packet transaction.  Their explicit, private capability names that
+    # candidate without publishing it as the reviewed canonical pin.
+    # 임포트를 try 밖에 둔다: 임포트 실패 시 except 절의 packet_transaction
+    # 이름이 미바인딩이라 NameError로 실제 원인이 가려지는 것을 방지.
+    sys.path.insert(0, str(ROOT))
+    from adapters import packet_transaction
+    try:
+        candidate = packet_transaction.candidate_version(ROOT / 'state/packet-ask-version.json')
+    except packet_transaction.TransactionError as error:
+        raise GuardError(str(error)) from None
+    if candidate is not None:
+        return candidate
     try:
         # Resolved at call time so a relocated or patched ROOT (tests, CI) is honored, unlike the import-time constant.
         value = json.loads((ROOT / 'state/packet-ask-version.json').read_text()).get('version')
@@ -264,13 +278,13 @@ def host_git_identity():
     return tuple(values)
 
 
-def clean_environment(home, github=None):
+def clean_environment(home, github=None, copy_git_identity=True):
     tmp = private_dir(home / 'tmp')
     # An empty .npmrc makes the real ~/.npmrc of the host be ignored. Recreated link-safely on every run.
     write_private_file(home, '.npmrc', '')
     # The isolated home has no global gitconfig, so the author becomes `user@hostname`. Plant only the host identity name
     # and email and lock them against the child (denyWrite in run_confined). Other global/system settings stay /dev/null.
-    identity = host_git_identity()
+    identity = host_git_identity() if copy_git_identity else None
     git_config_global = '/dev/null'
     if identity:
         write_private_file(home, '.gitconfig', '[user]\n\tname = ' + identity[0] + '\n\temail = ' + identity[1] + '\n')
@@ -396,12 +410,15 @@ def sandbox_policy(workspace, home, domains, extra_reads=()):
         '/private/etc/ssl/cert.pem', '/private/etc/ssl/openssl.cnf',
     ]
     # The node bin directory carries npm and friends; one binary is not enough.
-    # Homebrew holds development tools the operator already installed (dart, gh) and
-    # is read-only here, so it grants tooling, not data.
+    # Grant installed runtime trees, not the Homebrew prefix: etc/Caskroom and
+    # other user-managed configuration must not become model-readable tool data.
     executable_reads = [NODE.parent, NODE.resolve(), OPENCODE.resolve(), CLAUDE.resolve(),
                         PACKET_VENV.resolve(), PACKET_PYTHON.resolve().parents[1],
                         ROOT / 'packet_entry.py', NODE.parent.parent / 'lib/node_modules',
-                        Path('/opt/homebrew')]
+                        Path('/opt/homebrew/bin'), Path('/opt/homebrew/opt'), Path('/opt/homebrew/Cellar'),
+                        Path('/opt/homebrew/Library/Homebrew'),
+                        Path('/opt/homebrew/etc/ca-certificates/cert.pem'),
+                        Path('/opt/homebrew/etc/openssl@3/openssl.cnf')]
     # uv can use an intermediate runtime alias as well as the resolved binary.
     # Relative venv links must be interpreted from bin/, not the current directory.
     if PACKET_PYTHON.is_symlink():
@@ -412,8 +429,8 @@ def sandbox_policy(workspace, home, domains, extra_reads=()):
         executable_reads.append(linked_python.parents[1])
     deny_secrets = [str(workspace / '**' / name) for name in SECRET_NAMES]
     temp_directories = darwin_temp_directories()
-    # Homebrew is opened for tools (bin, Cellar, opt) but `var` is service data (postgresql@16 DB, redis dump, logs), closed
-    # (2026-09-16 review HIGH, user approved). `etc` is ca-certificates/openssl config, needed for TLS in Homebrew tools.
+    # Keep the explicit var denial; other host data stays below the root denial.
+    # Only the two public CA/OpenSSL files above are opened from etc.
     deny_homebrew_data = ['/opt/homebrew/var']
     return {
         'network': {'allowedDomains': list(domains), 'deniedDomains': [],
@@ -479,19 +496,25 @@ def free_loopback_port():
 
 
 def short_temp_directory(mode, workspace):
-    """A short guard-owned temporary directory per mode and workspace (`state/t/<7hex>`). It must fit the socket path limit.
+    """Allocate a fresh private temporary tree for every launch, never a shared hash prefix.
 
-    Limit arithmetic: sun_path 104 bytes - `/znr-<uuid>.sock` (46) = 57 characters. Install path 50 characters + 7 hex = 57.
+    The 57-byte ceiling leaves room for the CLI's 46-byte Unix socket basename.
+    Exclusive mkdir also prevents reuse even if a random identifier collides.
     """
-    identity = hashlib.sha256((mode + '\0' + str(workspace)).encode()).hexdigest()[:7]
-    directory = private_dir(private_dir(ROOT / 'state') / 't') / identity
-    if len(str(directory).encode()) > 57:
-        # The install path depends on the account name; a ten-character name already overflows. Fall back to a short
-        # guard-owned root under /private/tmp. private_dir refuses a directory another user pre-created (owner check).
-        directory = private_dir(Path('/private/tmp') / ('agentbelt-' + str(os.getuid()))) / identity
-        if len(str(directory).encode()) > 57:
-            raise GuardError('No temporary directory short enough for a unix socket path is available.')
-    return private_dir(directory)
+    import secrets
+    parent = private_dir(private_dir(ROOT / 'state') / 't')
+    if len(str(parent).encode()) + 23 > 57:
+        parent = private_dir(Path('/private/tmp') / ('agentbelt-' + str(os.getuid())))
+    if len(str(parent).encode()) + 23 > 57:
+        raise GuardError('No temporary directory short enough for a unix socket path is available.')
+    for _ in range(16):
+        directory = parent / secrets.token_urlsafe(16)
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        return directory
+    raise GuardError('Could not allocate a private temporary directory.')
 
 
 def persistent_home(mode, workspace):
@@ -501,11 +524,54 @@ def persistent_home(mode, workspace):
     return private_dir(private_dir(private_dir(state / 'homes') / mode) / identity)
 
 
+def ensure_shot_watcher(workspace):
+    """Start the host-side screenshot queue for this workspace if none is running.
+
+    The confined child has no browser, so shots/*.html -> PNG is handled on the host
+    (see shot_watcher.py for the egress rules).  Spawned detached: it outlives the
+    launching session, shares the workspace with later sessions through the PID lock,
+    and exits on its own after an idle stretch -- no persistent daemon is installed.
+    Convenience only: any failure here must never block a launch.
+    """
+    try:
+        queue = Path(workspace) / 'shots'
+        lock = queue / '.watcher.lock'
+        if lock.is_file():
+            alive = False
+            try:
+                os.kill(int(lock.read_text().strip()), 0)
+                alive = True
+            except PermissionError:
+                alive = True
+            except (ProcessLookupError, ValueError, OSError):
+                pass
+            if alive:
+                return
+            try:
+                lock.unlink()
+            except OSError:
+                return
+        script = ROOT / 'shot_watcher.py'
+        if not script.is_file():
+            return
+        queue.mkdir(exist_ok=True)
+        log = open(queue / '.watcher.log', 'ab', buffering=0)
+        try:
+            subprocess.Popen(['/usr/bin/python3', str(script), str(workspace)],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+        finally:
+            log.close()
+    except OSError:
+        pass
+
+
 def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_reads=(), ephemeral=False,
                  prepare_home=None, private_sockets=False, read_only_home_paths=(), dev_ports=(), stdout=None, stdin=None,
                  protect_opencode_config=False, opencode_plugins=(), instruction_files=(), notice_extra='',
-                 loopback_port=False, config_credentials=(), github=True, read_only_workspace_paths=(),
-                 short_tmpdir=False, loopback_all=False, allow_gradle_keystore=False, stderr=None):
+                 loopback_port=False, config_credentials=(), github=False, read_only_workspace_paths=(),
+                 short_tmpdir=False, loopback_all=False, allow_gradle_keystore=False, stderr=None, timeout=None,
+                 read_only_workspace=False, blocked_workspace_paths=()):
     if sys.platform != 'darwin' or not Path('/usr/bin/sandbox-exec').exists():
         raise GuardError('This launcher requires macOS Seatbelt; there is no unsandboxed fallback.')
     if not NODE.is_file() or not (ROOT / 'runtime/node_modules/@anthropic-ai/sandbox-runtime/package.json').is_file():
@@ -521,8 +587,10 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         write_private_json(control / 'owner.json',
                            {'pid': os.getpid(), 'started': process_started_at(os.getpid())})
         home = private_dir(control / 'home') if ephemeral else persistent_home(mode, workspace)
-        # Runtimes that run on auto-approval with no approval UI, such as AutoClaw, are not given the GitHub token.
-        env = clean_environment(home, github_token() if github else None)
+        # Only explicitly authorized coding modes receive the repository token.
+        # Helpers, package installers and candidate probes have no ambient credentials.
+        env = clean_environment(home, github_token() if github else None,
+                                copy_git_identity=mode in {'exec', 'opencode', 'kimi', 'zcode', 'autoclaw', 'zcode-shell'})
         if short_tmpdir:
             # A unix socket path over the sun_path limit (104 bytes) gives EINVAL. The isolated home tmp is 88 characters,
             # so a socket like `$TMPDIR/znr-<uuid>.sock` (46 characters) cannot be created. Give it a short guard-owned tmp.
@@ -579,6 +647,12 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
             # append gets through. Other keystores stay denied.
             env['AGENTBELT_GRADLE_KEYSTORE_ROOT'] = str(Path(workspace).resolve())
         policy = sandbox_policy(workspace, home, domains, extra_reads)
+        if read_only_workspace:
+            policy['filesystem']['denyWrite'].append(str(workspace))
+        for relative in blocked_workspace_paths:
+            path = str(Path(workspace) / relative)
+            policy['filesystem']['denyRead'].append(path)
+            policy['filesystem']['denyWrite'].append(path)
         if loopback_all:
             policy['network']['allowLocalBinding'] = True
         # For opt-in Darwin temp subfolders the policy opens only their interior and `T/` itself stays closed. If the host
@@ -620,15 +694,24 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         write_private_json(config, policy)
         if mode == 'zcode' and any(str(part).endswith('/glm/zcode.cjs') for part in command):
             runtime_status('zcode-start.json', {'pid': os.getpid(), 'workspace_id': hashlib.sha256(str(workspace).encode()).hexdigest()[:20], 'stage': 'supervisor-start'})
-        status = subprocess.call([str(NODE), str(ROOT / 'sandbox_runner.mjs'), str(config), '--', *command],
-                                 cwd=workspace, env=env, umask=0o077, stdout=stdout, stdin=stdin, stderr=stderr)
+        invocation = [str(NODE), str(ROOT / 'sandbox_runner.mjs'), str(config), '--', *command]
+        options = dict(cwd=workspace, env=env, umask=0o077, stdout=stdout, stdin=stdin, stderr=stderr)
+        import terminal_proxy
+        try:
+            status = terminal_proxy.run(invocation, timeout=timeout, **options)
+        except subprocess.TimeoutExpired:
+            raise GuardError('The confined command exceeded its time limit.') from None
+        except terminal_proxy.TerminalError as error:
+            raise GuardError(str(error)) from None
+        except OSError:
+            raise GuardError('The private terminal relay failed; no unrestricted fallback.') from None
         if mode == 'zcode' and any(str(part).endswith('/glm/zcode.cjs') for part in command):
             runtime_status('zcode-exit.json', {'pid': os.getpid(), 'workspace_id': hashlib.sha256(str(workspace).encode()).hexdigest()[:20], 'stage': 'supervisor-exit', 'exit_code': status})
         return status
     finally:
         # Only the private temporary control directory created by this invocation.
         shutil.rmtree(control)
-        if ephemeral and short_tmp is not None:
+        if short_tmp is not None:
             shutil.rmtree(short_tmp, ignore_errors=True)
 
 
@@ -823,14 +906,45 @@ def stage_kimi_binary():
     if file_sha256(staged) != baseline.get('sha256'):
         shutil.rmtree(directory, ignore_errors=True)
         raise GuardError('Kimi Code changed while staging; run agentbelt verify-updates before launching.')
+    try:
+        sys.path.insert(0, str(ROOT))
+        from adapters.kimi_privacy import harden_staged
+        harden_staged(staged)
+    except BaseException as error:
+        shutil.rmtree(directory, ignore_errors=True)
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        raise GuardError('Kimi privacy hardening failed; review the supported build before launching. No original fallback.') from None
     staged.chmod(0o500)
     return staged
 
 
+def stage_opencode_binary():
+    """Execute the verified clone, even if an updater replaces the original after verification."""
+    baseline = json.loads(compatibility_manifest().read_text()).get('opencode') or {}
+    runtime = private_dir(ROOT / 'state/opencode-runtime')
+    reap_dead_launch_directories(runtime)
+    directory = Path(tempfile.mkdtemp(prefix='launch-' + str(os.getpid()) + '-', dir=str(runtime)))
+    staged = directory / 'opencode'
+    try:
+        copy = subprocess.run(['/bin/cp', '-c', str(OPENCODE), str(staged)], capture_output=True)
+        if copy.returncode != 0:
+            copy = subprocess.run(['/bin/cp', str(OPENCODE), str(staged)], capture_output=True)
+        if copy.returncode != 0 or staged.is_symlink() or not staged.is_file():
+            raise GuardError('Could not stage the OpenCode binary for a guarded launch.')
+        if file_sha256(staged) != baseline.get('sha256'):
+            raise GuardError('OpenCode changed while staging; run agentbelt verify-updates before launching.')
+        staged.chmod(0o500)
+        return staged
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
 def discard_staged_binary(staged):
-    """Cleans up the clone of a finished run and its dedicated directory (AutoClaw and Kimi runtime directories only)."""
+    """Clean up only a clone inside one of the supervisor's runtime trees."""
     directory = Path(staged).parent
-    if directory.parent in (ROOT / 'state/autoclaw-runtime', ROOT / 'state/kimi-runtime'):
+    if directory.parent in (ROOT / 'state/autoclaw-runtime', ROOT / 'state/kimi-runtime', ROOT / 'state/opencode-runtime'):
         shutil.rmtree(directory, ignore_errors=True)
 
 
@@ -1010,50 +1124,77 @@ DEFAULT_REVIEW_MODEL = 'alibaba-token-plan/qwen3.8-max'
 
 
 def review_config(base, model=DEFAULT_REVIEW_MODEL):
-    """The reviewer configuration: the guard-owned OpenCode config plus a read-only `review` agent.
-
-    With every tool turned off the model can only read the workspace. The original configuration file is not changed.
-    """
+    """A tool-free reviewer receives the already scrubbed packet through stdin."""
     if not isinstance(model, str) or model.count('/') != 1 or not all(c.isalnum() or c in './_-' for c in model):
         raise GuardError('reviewModel must look like provider/model.')
     config = json.loads(json.dumps(base))
-    disabled = ['bash', 'edit', 'write', 'patch', 'webfetch', 'websearch', 'task', 'todowrite', 'skill']
+    disabled = ['bash', 'edit', 'write', 'patch', 'webfetch', 'websearch', 'task', 'todowrite', 'skill',
+                'read', 'glob', 'grep', 'list', 'question', 'lsp']
+    config['permission'] = {'*': 'deny'}
     config.setdefault('agent', {})['review'] = {
         'description': 'Read-only code reviewer used by packet-review',
         'mode': 'primary',
         'model': model,
         'tools': {name: False for name in disabled},
-        # In a non-interactive run permission requests are auto-denied, so only the read tools are allowed up front.
-        'permission': {'read': 'allow', 'glob': 'allow', 'grep': 'allow', 'list': 'allow'},
-        'prompt': 'You are a meticulous code reviewer. You may only read files. Never modify, create, or run anything.',
+        'permission': {'*': 'deny'},
+        'prompt': 'Answer the task in the supplied scrubbed packet. Do not call tools, read other files, or execute anything.',
     }
     return config
 
 
-def run_opencode_review(workspace, prompt, stdout=None):
-    """Runs the read-only Qwen reviewer non-interactively in a separate isolated home. Output is JSON event lines."""
+def review_provider_assets(base, auth, model):
+    """Retain one reviewed provider's definition, credential and exact endpoint."""
+    from adapters import configure_existing
+    # Validate the full model before splitting it or touching credentials.
+    review_config({}, model)
+    provider = model.split('/', 1)[0]
+    if provider not in configure_existing.PROVIDER_ENDPOINTS or provider not in auth:
+        raise GuardError('The review model needs an imported, reviewed provider credential.')
+    endpoints = {provider: sorted(configure_existing.PROVIDER_ENDPOINTS[provider])[0]}
+    try:
+        base, auth, profile = configure_existing.opencode_assets({provider: auth[provider]}, base, endpoints)
+    except (ValueError, TypeError, AttributeError):
+        raise GuardError('The review provider configuration is not valid.') from None
+    base['model'] = model
+    base.pop('small_model', None)
+    return review_config(base, model), auth, profile['domains']
+
+
+def run_opencode_review(workspace, prompt, stdout=None, stderr=None, timeout=None, deadline=None):
+    """Review a prepared packet with one provider and no original-workspace authority."""
     verify_opencode_binary()
-    development = development_options()
-    profile = load_opencode_profile()
     base = ROOT / 'state/opencode-config.json'
     auth_file = ROOT / 'state/opencode-auth.json'
     if not auth_file.is_file():
         raise GuardError('Selected OpenCode credentials have not been imported yet.')
-    config_file = ROOT / 'state/opencode-review-config.json'
-    # Rebuilt from the base configuration on every run. write_private_json is O_EXCL, so it is deleted first.
-    if config_file.exists():
-        config_file.unlink()
     settings = packet_relay_settings() or {}
-    write_private_json(config_file, review_config(json.loads(base.read_text()),
-                                                  settings.get('reviewModel', DEFAULT_REVIEW_MODEL)))
-    def prepare(home, env):
-        link_opencode_auth(home, auth_file)
-    return run_confined('opencode-review', workspace,
-                        [str(OPENCODE), 'run', '--agent', 'review', '--format', 'json', prompt],
-                        sorted(set(profile['domains'] + development['packageDomains'])),
-                        {'OPENCODE_CONFIG': str(config_file)}, [config_file, auth_file],
-                        prepare_home=prepare, read_only_home_paths=['.local/share/opencode/auth.json'],
-                        protect_opencode_config=True, stdout=stdout)
+    config, auth, domains = review_provider_assets(json.loads(base.read_text()), json.loads(auth_file.read_text()),
+                                                   settings.get('reviewModel', DEFAULT_REVIEW_MODEL))
+    with tempfile.TemporaryDirectory(prefix='review-config-', dir=private_dir(ROOT / 'state')) as temporary, \
+         tempfile.TemporaryFile() as prompt_input:
+        directory = Path(temporary)
+        config_file, selected_auth = directory / 'opencode-review-config.json', directory / 'auth.json'
+        write_private_json(config_file, config)
+        write_private_json(selected_auth, auth)
+        prompt_input.write(prompt.encode('utf-8'))
+        prompt_input.seek(0)
+        def prepare(home, env):
+            link_opencode_auth(home, selected_auth)
+        staged = stage_opencode_binary()
+        try:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise GuardError('The packet review deadline expired before model launch.')
+                timeout = min(timeout, remaining) if timeout is not None else remaining
+            return run_confined('opencode-review', workspace,
+                                [str(staged), 'run', '--agent', 'review', '--format', 'json'],
+                                domains, {'OPENCODE_CONFIG': str(config_file)}, [config_file, selected_auth, staged],
+                                prepare_home=prepare, read_only_home_paths=['.local/share/opencode/auth.json'],
+                                protect_opencode_config=True, stdout=stdout, stderr=stderr, stdin=prompt_input,
+                                ephemeral=True, read_only_workspace=True, timeout=timeout)
+        finally:
+            discard_staged_binary(staged)
 
 
 # On macOS, pub.dev reads the OAuth credentials in $HOME/Library/Application Support/dart.
@@ -1185,13 +1326,48 @@ def orca_integration():
     return plugin, coordinates
 
 
+# The only network destinations a reviewed zcode-family backend may reach
+# (the Zcode backend profile and the AutoClaw bundled CLI share the same host).
+REVIEWED_ZCODE_DOMAINS = frozenset({'api.z.ai:443'})
+
+
+def reviewed_opencode_domains():
+    """host:443 entries the reviewed provider import flow can emit."""
+    sys.path.insert(0, str(ROOT))
+    from adapters import configure_existing
+    return frozenset(host + ':443' for host in configure_existing.PROVIDER_HOSTS.values())
+
+
+def profile_domains(data, reviewed, label, *, required=False):
+    """Fail closed when a profile domain list is not a subset of the reviewed hosts."""
+    domains = data.get('domains')
+    if not isinstance(domains, list) or (required and not domains) \
+            or not all(isinstance(entry, str) and entry in reviewed for entry in domains):
+        raise GuardError(label + ' domains must be a subset of the reviewed hosts: ' + ', '.join(sorted(reviewed)) + '.')
+    return list(domains)
+
+
 def load_opencode_profile():
     profile = ROOT / 'state/opencode-profile.json'
     if not profile.is_file():
         raise GuardError('OpenCode provider profile is not configured yet. Run setup before using opencode-safe.')
     with profile.open() as stream:
         data = json.load(stream)
+    profile_domains(data, reviewed_opencode_domains(), 'state/opencode-profile.json', required=True)
     return data
+
+
+def zcode_profile_domains():
+    """The backend allowlist of state/zcode-profile.json, bounded by the reviewed host set."""
+    profile = ROOT / 'state/zcode-profile.json'
+    if not profile.is_file():
+        return []
+    return profile_domains(json.loads(profile.read_text()), REVIEWED_ZCODE_DOMAINS, 'state/zcode-profile.json')
+
+
+def autoclaw_domains():
+    """The backend allowlist of state/autoclaw-profile.json, bounded by the reviewed host set."""
+    return profile_domains(autoclaw_profile(), REVIEWED_ZCODE_DOMAINS, 'state/autoclaw-profile.json')
 
 
 def inside_zcode_sandbox():
@@ -1209,6 +1385,91 @@ def inside_zcode_sandbox():
         return False
 
 
+ZCODE_GUI_BLOCK_REASON = (
+    'Zcode GUI launch is blocked: its automatic repository upload runs outside the backend sandbox. '
+    'The protected CLI backend remains available; do not use the desktop app for private repositories.')
+
+
+def check_zcode_gui():
+    """A backend receipt cannot authorize an unconfined desktop uploader."""
+    raise GuardError(ZCODE_GUI_BLOCK_REASON)
+
+
+def verified_private_zcode(generation=None):
+    """Authenticate the private bundle; never fall back to the vendor app."""
+    sys.path.insert(0, str(ROOT))
+    from adapters import zcode_privacy
+    try:
+        return zcode_privacy.verify(ROOT, generation=generation)
+    except (OSError, ValueError, RuntimeError):
+        raise GuardError('The snapshot-blocked Zcode copy is missing or changed; rebuild and verify it before use.') from None
+
+
+def zcode_gui_processes():
+    """Use executable identity, not a mutable process title, for GUI separation."""
+    original = Path('/Applications/ZCode.app/Contents/MacOS/ZCode')
+    private = ROOT / 'state/zcode-private/ZCode.app/Contents/MacOS/ZCode'
+    result = {'original': [], 'private': []}
+    rows = subprocess.run(['/bin/ps', '-axo', 'pid=,uid='], capture_output=True, text=True, check=True).stdout
+    for row in rows.splitlines():
+        fields = row.split()
+        if len(fields) != 2 or not all(value.isdigit() for value in fields):
+            continue
+        pid, uid = map(int, fields)
+        if uid != os.getuid():
+            continue
+        candidate = executable_path(pid)
+        if candidate == str(original):
+            result['original'].append(pid)
+        elif candidate == str(private):
+            result['private'].append(pid)
+    return result
+
+
+def private_zcode_launch_plan():
+    sys.path.insert(0, str(ROOT))
+    from adapters import zcode_privacy
+    try:
+        plan = zcode_privacy.launch_plan(ROOT)
+    except (OSError, ValueError, RuntimeError):
+        raise GuardError('The snapshot-blocked Zcode copy is missing or changed; rebuild and verify it before use.') from None
+    processes = zcode_gui_processes()
+    if processes['original']:
+        raise GuardError('Save your work and quit the original Zcode GUI before opening the snapshot-blocked copy.')
+    plan['private_gui_pid'] = min(processes['private']) if processes['private'] else None
+    return plan
+
+
+def record_private_zcode_launch(pid, generation):
+    manifest = verified_private_zcode(generation)
+    expected = ROOT / 'state/zcode-private/ZCode.app/Contents/MacOS/ZCode'
+    if type(pid) is not int or pid <= 0 or executable_path(pid) != str(expected):
+        raise GuardError('The process is not the verified private Zcode executable.')
+    uid = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'uid='], capture_output=True, text=True, check=True).stdout.strip()
+    started = process_started_at(pid)
+    if uid != str(os.getuid()) or not started:
+        raise GuardError('The private Zcode process owner or start time could not be verified.')
+    info = expected.stat()
+    runtime_status('zcode-private-gui.json', {'pid': pid, 'uid': os.getuid(), 'started': started,
+                                           'generation': manifest['generation'],
+                                           'bundle_digest': manifest['bundle_digest'],
+                                           'executable_device': info.st_dev, 'executable_inode': info.st_ino})
+
+
+def launch_private_zcode_app():
+    plan = private_zcode_launch_plan()
+    executable = str(ROOT / 'state/zcode-private/ZCode.app/Contents/MacOS/ZCode')
+    environment = {'HOME': str(OWNER_HOME), 'USER': OWNER_USER, 'LOGNAME': OWNER_USER,
+                   'PATH': ':'.join([str(NODE.parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']),
+                   'LANG': 'en_US.UTF-8', **plan['environment']}
+    # A direct CLI exec keeps this PID/start time. Status checks the actual
+    # executable after exec; this record alone is never a protection claim.
+    runtime_status('zcode-private-gui.json', {'pid': os.getpid(), 'uid': os.getuid(),
+                                           'started': process_started_at(os.getpid()),
+                                           'generation': plan['generation'], 'launch_intent': True})
+    os.execve(executable, [executable], environment)
+
+
 def live_zcode_status():
     import ctypes
     rows = []
@@ -1217,7 +1478,10 @@ def live_zcode_status():
         fields = line.strip().split(None, 2)
         if len(fields) == 3:
             rows.append((int(fields[0]), int(fields[1]), fields[2]))
-    roots = {pid for pid, parent, name in rows if name == 'ZCode'}
+    has_private_manifest = (ROOT / 'state/zcode-private/manifest.json').is_file()
+    processes = zcode_gui_processes() if has_private_manifest else None
+    roots = (set(processes['original'] + processes['private']) if processes is not None
+             else {pid for pid, parent, name in rows if name == 'ZCode'})
     family = set(roots)
     for _ in range(12):
         family |= {pid for pid, parent, name in rows if parent in family}
@@ -1226,7 +1490,8 @@ def live_zcode_status():
         if pid not in family or name not in {'Python', 'python3'}:
             continue
         command = subprocess.run(['/bin/ps', '-ww', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout
-        if str(ROOT / 'agentbelt.py') + ' zcode-backend' in command:
+        if any(str(ROOT / 'agentbelt.py') + ' ' + mode + ' ' in command
+               for mode in ('zcode-backend', 'zcode-private-backend')):
             guards.add(pid)
     protected = set(guards)
     for _ in range(12):
@@ -1245,34 +1510,41 @@ def live_zcode_status():
         if receipt.get('pid') in roots:
             started = subprocess.run(['/bin/ps', '-p', str(receipt['pid']), '-o', 'lstart='], capture_output=True, text=True).stdout.strip()
             receipt_valid = bool(started) and started == receipt.get('started')
-    return {'gui_running': bool(roots), 'gui_pid': min(roots) if roots else None, 'safe_launch': receipt_valid,
+    result = {'gui_running': bool(roots), 'gui_pid': min(roots) if roots else None, 'safe_launch': False,
+            'backend_launch_recorded': receipt_valid, 'gui_egress_confined': False,
+            'gui_launch_allowed': False, 'gui_block_reason': ZCODE_GUI_BLOCK_REASON,
             'backend_count': len(guards), 'sandboxed_children': sandboxed}
+    result.update(private_gui_running=False, private_gui_pid=None, original_gui_running=bool(roots),
+                  private_launch_recorded=False, snapshot_uploads_blocked=False, auto_updates_blocked=False)
+    if processes is not None:
+        private_pids = processes['private']
+        result.update(original_gui_running=bool(processes['original']), private_gui_running=bool(private_pids),
+                      private_gui_pid=min(private_pids) if private_pids else None,
+                      gui_running=bool(private_pids or processes['original']))
+        try:
+            manifest = verified_private_zcode()
+            result.update(gui_launch_allowed=not processes['original'], snapshot_uploads_blocked=True,
+                          auto_updates_blocked=True, private_generation=manifest['generation'])
+            if not processes['original']:
+                result['gui_block_reason'] = None
+            private_receipt = ROOT / 'state/runtime/zcode-private-gui.json'
+            if private_receipt.is_file() and not private_receipt.is_symlink():
+                data = json.loads(private_receipt.read_text())
+                pid = data.get('pid')
+                executable_info = (ROOT / 'state/zcode-private/ZCode.app/Contents/MacOS/ZCode').stat()
+                result['private_launch_recorded'] = (pid in private_pids and data.get('uid') == os.getuid()
+                    and data.get('generation') == manifest['generation']
+                    and data.get('bundle_digest') == manifest['bundle_digest']
+                    and data.get('executable_device') == executable_info.st_dev
+                    and data.get('executable_inode') == executable_info.st_ino
+                    and data.get('started') == process_started_at(pid))
+        except (GuardError, OSError, ValueError, TypeError):
+            result['gui_block_reason'] = 'The private Zcode copy could not be verified.'
+    return result
 
 
 def launch_zcode_app():
-    verify_zcode_binary()
-    application = Path('/Applications/ZCode.app')
-    running = subprocess.run(['/usr/bin/pgrep', '-u', str(os.getuid()), '-x', 'ZCode'],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if running.returncode == 0:
-        subprocess.run(['/usr/bin/osascript', '-e',
-                        'display alert "Zcode Safe" message "Quit Zcode completely, then reopen this launcher. Existing sessions are not closed automatically."'],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        raise GuardError('Quit the existing Zcode application before starting Zcode Safe.')
-    if running.returncode != 1:
-        raise GuardError('Could not check existing Zcode processes; refusing to launch.')
-    # Keep the familiar desktop profile, but replace the agent's entry point.
-    # The GUI itself is not claimed to be inside the agent's Seatbelt policy.
-    env = {'HOME': str(OWNER_HOME), 'USER': OWNER_USER, 'LOGNAME': OWNER_USER,
-           'PATH': ':'.join([str(NODE.parent), '/opt/homebrew/bin', '/Library/Developer/CommandLineTools/usr/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']),
-           'SHELL': '/bin/zsh', 'LANG': 'en_US.UTF-8',
-           'ZCODE_AGENT_SERVER_COMMAND': str(OWNER_HOME / '.local/bin/zcode-backend-safe'),
-           'ZCODE_AGENT_SERVER_ARGS_JSON': '["app-server","--stdio"]',
-           'ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT': '1'}
-    executable = str(application / 'Contents/MacOS/ZCode')
-    started = subprocess.run(['/bin/ps', '-p', str(os.getpid()), '-o', 'lstart='], capture_output=True, text=True).stdout.strip()
-    runtime_status('zcode-gui.json', {'pid': os.getpid(), 'started': started})
-    os.execve(executable, [executable], env)
+    check_zcode_gui()
 
 
 def github_token_path():
@@ -1382,7 +1654,7 @@ def prepare_packet_request(arguments, use_keychain=False):
             providers.append(value.partition('=')[2])
     if len(providers) != 1 or providers[0] != 'glm':
         raise GuardError('Use --provider glm for the protected SUB. Claude Code is the MAIN caller, not --provider claude.')
-    if '--preview' in arguments or '--dry-run' in arguments:
+    if any(flag in arguments for flag in ('--preview', '--dry-run', '--help', '-h')):
         return arguments, [], env
     if any(a == '--credential-source' or a.startswith('--credential-source=') for a in arguments):
         raise GuardError('Use the dedicated environment key or --use-keychain instead of --credential-source.')
@@ -1393,6 +1665,32 @@ def prepare_packet_request(arguments, use_keychain=False):
         raise GuardError('Supply PACKET_ASK_GLM_KEY or use --use-keychain for the dedicated packet-ask-glm item.')
     env['PACKET_ASK_GLM_KEY'] = key
     return [*arguments, '--credential-source', 'env'], ['api.z.ai:443'], env
+
+
+def run_packet_mode(args, remaining):
+    """Run one complete packet operation while its install and pin stay stable."""
+    if not remaining:
+        raise GuardError('Supply packet-ask arguments, for example: inspect review --files src/main.py --question-stdin')
+    if args.mode == 'packet-qwen':
+        from adapters import packet_pipeline
+        return packet_pipeline.run(remaining, workspace=workspace_path(os.getcwd()), provider='qwen')
+    if remaining[0] == 'setup-key':
+        if len(remaining) != 1:
+            raise GuardError('Use packet-ask-safe setup-key without key values or extra arguments.')
+        return packet_setup_key()
+    if remaining[0] in {'providers', 'doctor'}:
+        if remaining[1:] not in [[], ['--json']]:
+            raise GuardError('Use providers/doctor with an optional --json flag.')
+        return packet_provider_status(remaining)
+    if remaining[0] in {'review', 'research'} and not any(
+            flag in remaining for flag in ('--preview', '--dry-run', '--help', '-h')):
+        from adapters import packet_pipeline
+        return packet_pipeline.run(remaining, use_keychain=args.use_keychain,
+                                   workspace=workspace_path(os.getcwd()), provider='glm')
+    remaining, domains, env = prepare_packet_request(remaining, args.use_keychain)
+    return run_confined('packet-ask', workspace_path(os.getcwd()),
+                        [str(PACKET_PYTHON), '-I', str(ROOT / 'packet_entry.py'), *remaining],
+                        domains=domains, extra_env=env, ephemeral=True, read_only_workspace=True)
 
 
 LAUNCH_LOG_LIMIT = 200 * 1024
@@ -1478,7 +1776,7 @@ def run_autoclaw_backend(remaining):
     base_config = ROOT / 'state/zcode-agent-config.json'
     if not base_config.is_file():
         raise GuardError('Zcode guard settings have not been installed.')
-    domains = autoclaw_profile().get('domains', [])
+    domains = autoclaw_domains()
     relay_settings = packet_relay_settings()
     relay = None
     if relay_settings is not None:
@@ -1513,7 +1811,7 @@ def run_autoclaw_backend(remaining):
                                   read_only_home_paths=['.zcode/cli/config.json'] + (relay.read_only_home_paths() if relay else []),
                                   dev_ports=development['devPorts'], instruction_files=['.zcode/AGENTS.md'],
                                   notice_extra=AUTOCLAW_NOTICE + (relay.notice() if relay else ''),
-                                  loopback_port=True, github=True, read_only_workspace_paths=ZCODE_WORKSPACE_CONFIG_PATHS,
+                                  loopback_port=True, github=True, blocked_workspace_paths=ZCODE_WORKSPACE_CONFIG_PATHS,
                                   short_tmpdir=True, loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
         finally:
             # Even when it ends in an exception the receipt and the cleanup remain, so AutoClaw does not consider a dead
@@ -1550,19 +1848,31 @@ def main(argv=None):
     packet.add_argument('--use-keychain', action='store_true',
                         help='Allow reading only the dedicated packet-ask-glm Keychain item when needed.')
     packet.add_argument('args', nargs=argparse.REMAINDER)
+    packet_qwen = sub.add_parser('packet-qwen', help='Review a scrubbed packet with the selected OpenCode reviewer.')
+    packet_qwen.add_argument('args', nargs=argparse.REMAINDER)
     shell = sub.add_parser('zcode-shell')
     shell.add_argument('workspace')
     shell.add_argument('encoded_command')
     backend = sub.add_parser('zcode-backend')
     backend.add_argument('args', nargs=argparse.REMAINDER)
+    private_backend = sub.add_parser('zcode-private-backend')
+    private_backend.add_argument('--generation', required=True)
+    private_backend.add_argument('args', nargs=argparse.REMAINDER)
     autoclaw = sub.add_parser('autoclaw-backend', help='AutoClaw zcode-runtime command: version probe or agent-server.')
     autoclaw.add_argument('args', nargs=argparse.REMAINDER)
     sub.add_parser('zcode-app')
+    sub.add_parser('zcode-private-app')
+    sub.add_parser('check-zcode-private')
+    private_record = sub.add_parser('record-zcode-private-launch')
+    private_record.add_argument('pid', type=int)
+    private_record.add_argument('--generation', required=True)
     sub.add_parser('setup-github-token')
     sub.add_parser('doctor')
     sub.add_parser('init', help='Create the state files a fresh installation needs and record baselines for installed agents.')
     sub.add_parser('live-status')
     sub.add_parser('check-zcode')
+    sub.add_parser('check-zcode-backend')
+    sub.add_parser('check-zcode-gui')
     record = sub.add_parser('record-zcode-launch')
     record.add_argument('pid', type=int)
     sub.add_parser('restore-open-history')
@@ -1570,16 +1880,19 @@ def main(argv=None):
     history.add_argument('workspace')
     sub.add_parser('verify-updates')
     args = parser.parse_args(argv)
-    if args.mode == 'check-zcode':
+    if args.mode == 'check-zcode-backend':
         verify_zcode_binary()
         riskgate_policy()
         return 0
-    if args.mode == 'record-zcode-launch':
-        name = subprocess.run(['/bin/ps', '-p', str(args.pid), '-o', 'ucomm='], capture_output=True, text=True).stdout.strip()
-        started = subprocess.run(['/bin/ps', '-p', str(args.pid), '-o', 'lstart='], capture_output=True, text=True).stdout.strip()
-        if name != 'ZCode' or not started:
-            raise GuardError('The newly launched Zcode process could not be verified.')
-        runtime_status('zcode-gui.json', {'pid': args.pid, 'started': started})
+    # Old native launchers call check-zcode before opening the GUI. Keep that
+    # legacy gate closed too, even if a launcher process predates this upgrade.
+    if args.mode in {'check-zcode', 'check-zcode-gui', 'record-zcode-launch'}:
+        check_zcode_gui()
+    if args.mode == 'check-zcode-private':
+        print(json.dumps(private_zcode_launch_plan()))
+        return 0
+    if args.mode == 'record-zcode-private-launch':
+        record_private_zcode_launch(args.pid, args.generation)
         return 0
     if args.mode == 'live-status':
         print(json.dumps(live_zcode_status()))
@@ -1612,12 +1925,11 @@ def main(argv=None):
         return subprocess.call(['/usr/bin/python3', '-I', str(ROOT / 'adapters/compatibility_check.py')],
                                env={'HOME': str(OWNER_HOME), 'PATH': '/usr/bin:/bin', 'DEVELOPER_DIR': '/Library/Developer/CommandLineTools'})
     if args.mode == 'opencode-review':
-        prompt = sys.stdin.read()
-        if not prompt.strip() or len(prompt) > 64 * 1024:
-            raise GuardError('Provide the review prompt on stdin (under 64KB).')
-        return run_opencode_review(workspace_path(args.workspace), prompt)
+        raise GuardError('Raw-workspace review is disabled. Use packet-review --provider qwen or agentbelt packet-qwen.')
     if args.mode == 'zcode-app':
         return launch_zcode_app()
+    if args.mode == 'zcode-private-app':
+        return launch_private_zcode_app()
     if args.mode == 'zcode-shell':
         development = development_options()
         command = base64.b64decode(args.encoded_command, validate=True).decode('utf-8')
@@ -1636,7 +1948,7 @@ def main(argv=None):
             # An unknown verdict closes. Blocking only the string 'deny' let None and error objects run as they were.
             raise GuardError('The riskgate verdict could not be interpreted, so the shell execution was blocked.')
         return run_confined('zcode-shell', workspace,
-                            ['/bin/bash', '--noprofile', '--norc', '-c', command], ephemeral=True,
+                            ['/bin/bash', '--noprofile', '--norc', '-c', command], ephemeral=True, github=True,
                             domains=development['packageDomains'], dev_ports=development['devPorts'],
                             loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
     remaining = args.args
@@ -1655,7 +1967,7 @@ def main(argv=None):
     if args.mode == 'exec':
         if not remaining:
             raise GuardError('A command is required after --.')
-        return run_confined('exec', workspace_path(args.workspace), remaining, ephemeral=True)
+        return run_confined('exec', workspace_path(args.workspace), remaining, ephemeral=True, github=True)
     if args.mode in {'opencode', 'safecode'}:
         workspace = workspace_path(os.getcwd() if args.mode == 'safecode' else args.workspace)
         verify_opencode_binary()
@@ -1688,15 +2000,20 @@ def main(argv=None):
                           if publish is not None else '')
         def launch(extra, plugins):
             locked = ['.local/share/opencode/auth.json'] + (relay.read_only_home_paths() if relay else [])
-            return run_confined('opencode', workspace, [str(OPENCODE), *remaining],
-                                sorted(set(profile['domains'] + development['packageDomains']
-                                           + (PUB_PUBLISH_DOMAINS if publish is not None else []))),
-                                dict({'OPENCODE_CONFIG': str(config_file)}, **extra), [config_file, auth_file],
-                                prepare_home=prepare_opencode,
-                                read_only_home_paths=locked, dev_ports=development['devPorts'],
-                                protect_opencode_config=True, opencode_plugins=plugins,
-                                notice_extra=(relay.notice() if relay else '') + publish_notice, loopback_port=True,
-                                config_credentials=publish_creds, loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
+            staged = stage_opencode_binary()
+            ensure_shot_watcher(workspace)
+            try:
+                return run_confined('opencode', workspace, [str(staged), *remaining],
+                                    sorted(set(profile['domains'] + development['packageDomains']
+                                               + (PUB_PUBLISH_DOMAINS if publish is not None else []))),
+                                    dict({'OPENCODE_CONFIG': str(config_file)}, **extra), [config_file, auth_file, staged],
+                                    prepare_home=prepare_opencode, github=True,
+                                    read_only_home_paths=locked, dev_ports=development['devPorts'],
+                                    protect_opencode_config=True, opencode_plugins=plugins,
+                                    notice_extra=(relay.notice() if relay else '') + publish_notice, loopback_port=True,
+                                    config_credentials=publish_creds, loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
+            finally:
+                discard_staged_binary(staged)
         integration = orca_integration()
         if integration is None:
             if relay is None:
@@ -1715,8 +2032,13 @@ def main(argv=None):
             with relay:
                 return launch(dict(broker.child_environment(),
                                    AGENTBELT_BROKER_PORT=str(broker.port)), [plugin])
-    if args.mode == 'zcode-backend':
-        verify_zcode_binary()
+    if args.mode in {'zcode-backend', 'zcode-private-backend'}:
+        if args.mode == 'zcode-private-backend':
+            manifest = verified_private_zcode(args.generation)
+            application = Path(manifest['app_path'])
+        else:
+            verify_zcode_binary()
+            application = Path('/Applications/ZCode.app')
         development = development_options()
         riskgate = riskgate_policy()
         if remaining not in [['app-server', '--stdio'], ['app-server', '--stdio', '--surface', 'desktop']]:
@@ -1725,8 +2047,7 @@ def main(argv=None):
         base_config = ROOT / 'state/zcode-agent-config.json'
         if not base_config.is_file():
             raise GuardError('Zcode guard settings have not been installed.')
-        profile = ROOT / 'state/zcode-profile.json'
-        domains = json.loads(profile.read_text())['domains'] if profile.is_file() else []
+        domains = zcode_profile_domains()
         relay_settings = packet_relay_settings()
         relay = None
         if relay_settings is not None:
@@ -1734,47 +2055,54 @@ def main(argv=None):
             from adapters.packet_relay import PacketRelay
             relay = PacketRelay(workspace, persistent_home('zcode', workspace), settings=relay_settings)
         def prepare_zcode(home, env):
-            private_dir(private_dir(home / '.zcode') / 'cli')
+            zcode_home = private_dir(home / '.zcode')
+            private_dir(zcode_home / 'cli')
             if relay is not None:
                 relay.prepare(home, env)
-            env.update({'ZCODE_HOME': str(private_dir(home / '.zcode')),
+            # Since 3.12.3 the app-server resolves the built-in provider config only from a SEA
+            # asset or an entrypoint five levels below Resources, so `node glm/zcode.cjs` cannot
+            # boot. Copy the bundled file into the writable home and pass the supported override.
+            v2 = private_dir(zcode_home / 'v2')
+            builtin = v2 / 'zcode-builtin.json'
+            write_private_file(v2, 'zcode-builtin.json',
+                               (application / 'Contents/Resources/config/provider/zcode-builtin.json').read_text())
+            env.update({'ZCODE_HOME': str(zcode_home),
                         'AGENTBELT_BACKEND': 'zcode-v1', 'AGENTBELT_BOOTSTRAP': 'zcode',
                         'AGENTBELT_PROMPT_TELEMETRY': '1' if prompt_telemetry_enabled() else '0',
+                        'ZCODE_BUILTIN_PROVIDER_CONFIG_FILE': str(builtin),
+                        'ZCODE_PERSONAL_PROVIDER_CONFIG_FILE': str(v2 / 'provider_config.json'),
                         # Providers built on Node's global fetch ignore the agent's own
                         # proxy settings and resolve DNS directly, which cannot work here.
                         'NODE_OPTIONS': '--import ' + (ROOT / 'proxy_bootstrap.mjs').as_uri()})
-        reads = ['/Applications/ZCode.app', ROOT / 'agentbelt.py', ROOT / 'zcode_hook.py',
+        reads = [application, ROOT / 'agentbelt.py', ROOT / 'zcode_hook.py',
                  base_config, ROOT / 'riskgate_bridge.py', ROOT / 'vendor', ROOT / 'state/riskgate.json', riskgate,
                  ROOT / 'proxy_bootstrap.mjs', ROOT / 'runtime/node_modules/undici']
         def launch_zcode():
             return run_confined('zcode', workspace,
-                                [str(NODE), '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs',
+                                [str(NODE), str(application / 'Contents/Resources/glm/zcode.cjs'),
                                  'app-server', '--stdio', '--surface', 'desktop'],
                                 sorted(set(domains + development['packageDomains'])), extra_reads=reads, prepare_home=prepare_zcode, private_sockets=True,
                                 read_only_home_paths=['.zcode/cli/config.json'] + (relay.read_only_home_paths() if relay else []),
                                 dev_ports=development['devPorts'], instruction_files=['.zcode/AGENTS.md'],
-                                notice_extra=relay.notice() if relay else '', loopback_port=True,
-                                read_only_workspace_paths=ZCODE_WORKSPACE_CONFIG_PATHS, loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
+                                notice_extra=relay.notice() if relay else '', loopback_port=True, github=True,
+                                blocked_workspace_paths=ZCODE_WORKSPACE_CONFIG_PATHS, loopback_all=loopback_grant(workspace), allow_gradle_keystore=gradle_keystore_grant(workspace))
         if relay is None:
             return launch_zcode()
         with relay:
             return launch_zcode()
     if args.mode == 'autoclaw-backend':
         return run_autoclaw_backend(remaining)
-    if not remaining:
-        raise GuardError('Supply packet-ask arguments, for example: inspect review --files src/main.py --question-stdin')
-    if remaining[0] == 'setup-key':
-        if len(remaining) != 1:
-            raise GuardError('Use packet-ask-safe setup-key without key values or extra arguments.')
-        return packet_setup_key()
-    if remaining[0] in {'providers', 'doctor'}:
-        if remaining[1:] not in [[], ['--json']]:
-            raise GuardError('Use providers/doctor with an optional --json flag.')
-        return packet_provider_status(remaining)
-    remaining, domains, env = prepare_packet_request(remaining, args.use_keychain)
-    return run_confined('packet-ask', workspace_path(os.getcwd()),
-                        [str(PACKET_PYTHON), '-I', str(ROOT / 'packet_entry.py'), *remaining],
-                        domains=domains, extra_env=env)
+    # Host-only lazy import: agentbelt is also imported by hooks inside the
+    # sandbox, where sibling host modules must never become ambient imports.
+    # The launchers run this file with `python3 -I`, which drops the script
+    # directory from sys.path, so ROOT must be inserted explicitly here.
+    sys.path.insert(0, str(ROOT))
+    from adapters import packet_transaction
+    try:
+        with packet_transaction.consumer(ROOT / 'state/packet-ask-version.json'):
+            return run_packet_mode(args, remaining)
+    except packet_transaction.TransactionError as error:
+        raise GuardError(str(error)) from None
 
 
 if __name__ == '__main__':

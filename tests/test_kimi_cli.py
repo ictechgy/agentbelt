@@ -226,7 +226,8 @@ class BinaryGateTests(unittest.TestCase):
             (root / 'state').mkdir()
             (root / 'state/compatibility.json').write_text(json.dumps(
                 {'kimi': {'version': 't', 'sha256': hashlib.sha256(b'reviewed bytes').hexdigest()}}))
-            with patch.object(g, 'ROOT', root), patch.object(g, 'KIMI', binary):
+            with patch.object(g, 'ROOT', root), patch.object(g, 'KIMI', binary), \
+                 patch('adapters.kimi_privacy.harden_staged'):
                 staged = g.stage_kimi_binary()
                 self.assertEqual(staged.parent.parent, root / 'state/kimi-runtime')
                 self.assertEqual(staged.read_bytes(), b'reviewed bytes')
@@ -279,6 +280,7 @@ class WiringTests(unittest.TestCase):
         self.staged = Path('/tmp/synthetic-kimi-runtime/launch-1-x/kimi')
         self.discarded = []
         self.patches = [patch.object(g, 'run_confined', fake_run_confined),
+                        patch.object(g, 'ensure_shot_watcher'),
                         patch.object(g, 'verify_kimi_binary', lambda: '0.43.1'),
                         patch.object(g, 'stage_kimi_binary', lambda: self.staged),
                         patch.object(g, 'discard_staged_binary', self.discarded.append),
@@ -326,6 +328,7 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(list(call['read_only_home_paths']), ['.kimi-code/region'])
         self.assertEqual(list(call['instruction_files']), ['.kimi-code/AGENTS.md'])
         self.assertTrue(call['loopback_port'])
+        self.assertTrue(call['github'])
         self.assertIsNone(call.get('extra_env'))
         # The environment is populated inside prepare_home with the home decided by run_confined (the home is not created in advance).
         self.assertFalse((ROOT / 'state/homes/kimi' / hashlib.sha256(str(self.work).encode()).hexdigest()[:20]).exists())
@@ -336,7 +339,7 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(env['AGENTBELT_KIMI_BINARY'], str(self.staged))
         self.assertEqual(env['KIMI_DISABLE_TELEMETRY'], '1')
         self.assertEqual(env['CHOKIDAR_USEPOLLING'], '1')
-        self.assertEqual(env['NODE_OPTIONS'], '--require ' + str(kimi_cli.WATCH_BOOTSTRAP))
+        self.assertEqual(__import__('shlex').split(env['NODE_OPTIONS']), ['--require', str(kimi_cli.WATCH_BOOTSTRAP)])
         self.assertIn('clipboard', call['notice_extra'])
         self.assertIn('/login', call['notice_extra'])
 
@@ -471,7 +474,8 @@ class HomebrewDataBoundaryTests(unittest.TestCase):
         script = ('ls /opt/homebrew/var >/dev/null 2>&1 && echo VAR_OPEN || echo VAR_BLOCKED\n'
                   'ls /opt/homebrew/var/postgresql@16 >/dev/null 2>&1 && echo PG_OPEN || echo PG_BLOCKED\n'
                   'ls /opt/homebrew/bin >/dev/null 2>&1 && echo BIN_OPEN || echo BIN_BLOCKED\n'
-                  'ls /opt/homebrew/etc/ca-certificates >/dev/null 2>&1 && echo CERT_OPEN || echo CERT_BLOCKED\n')
+                  'ls /opt/homebrew/etc >/dev/null 2>&1 && echo ETC_OPEN || echo ETC_BLOCKED\n'
+                  'test -r /opt/homebrew/etc/ca-certificates/cert.pem && echo CERT_OPEN || echo CERT_BLOCKED\n')
         with tempfile.TemporaryDirectory(prefix='brew-var-', dir=Path.home()) as tmp:
             work = Path(tmp)
             (work / 'p.sh').write_text(script)
@@ -483,8 +487,12 @@ class HomebrewDataBoundaryTests(unittest.TestCase):
         self.assertIn('VAR_BLOCKED', text)
         self.assertIn('PG_BLOCKED', text)
         self.assertIn('BIN_OPEN', text)
+        self.assertIn('ETC_BLOCKED', text)
         self.assertIn('CERT_OPEN', text)
         self.assertIn('/opt/homebrew/var', g.sandbox_policy(work, work / 'home', [])['filesystem']['denyRead'])
+        allowed = g.sandbox_policy(work, work / 'home', [])['filesystem']['allowRead']
+        self.assertNotIn('/opt/homebrew', allowed)
+        self.assertNotIn('/opt/homebrew/etc', allowed)
 
 
 class LaunchSmokeTests(unittest.TestCase):
@@ -528,10 +536,14 @@ class LaunchSmokeTests(unittest.TestCase):
         require_installed_kimi()
         with tempfile.TemporaryDirectory(prefix='kimi-tui-', dir=Path.home()) as tmp:
             work = Path(tmp)
-            runner = ('import sys; sys.path.insert(0, sys.argv[1]); import agentbelt as g; from adapters import kimi_cli; from pathlib import Path; '
-                      'w = Path(sys.argv[2]); sys.exit(g.run_confined("kimi-test", w, [str(g.KIMI)], domains=[], ephemeral=True, '
-                      'extra_reads=[g.KIMI, kimi_cli.WATCH_BOOTSTRAP], prepare_home=kimi_cli.prepare_kimi_home("global", g.KIMI), '
-                      'read_only_home_paths=[kimi_cli.REGION_MARKER_RELATIVE]))')
+            runner = ('import sys; sys.path.insert(0, sys.argv[1]); import agentbelt as g; from adapters import kimi_cli; from pathlib import Path\n'
+                      'w = Path(sys.argv[2]); binary = g.stage_kimi_binary()\n'
+                      'try:\n'
+                      ' status = g.run_confined("kimi-test", w, [str(binary)], domains=[], ephemeral=True, '
+                      'extra_reads=[binary, kimi_cli.WATCH_BOOTSTRAP], prepare_home=kimi_cli.prepare_kimi_home("global", binary), '
+                      'read_only_home_paths=[kimi_cli.REGION_MARKER_RELATIVE])\n'
+                      'finally: g.discard_staged_binary(binary)\n'
+                      'sys.exit(status)')
             pid, master = pty.fork()
             if pid == 0:
                 os.chdir(str(work))

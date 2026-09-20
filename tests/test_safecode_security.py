@@ -71,7 +71,7 @@ print(json.dumps({'writes':results,'exit':r.returncode,'permission':json.loads(r
             runner = r'''import sys,os
 from pathlib import Path
 sys.path.insert(0,sys.argv[1]);import agentbelt as g
-g.ROOT=Path(sys.argv[2]);g.verify_opencode_binary=lambda:None;g.load_opencode_profile=lambda:{'domains':[]}
+g.ROOT=Path(sys.argv[2]);g.verify_opencode_binary=lambda:None;g.stage_opencode_binary=lambda:g.OPENCODE;g.load_opencode_profile=lambda:{'domains':[]}
 original=g.run_confined
 # Substitute only the untrusted child to attempt a configuration attack.
 def run(mode,workspace,command,*args,**kwargs):

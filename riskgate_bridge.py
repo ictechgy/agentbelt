@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 
 ROOT = Path(__file__).resolve().parent
@@ -28,9 +29,28 @@ def riskgate_decision(payload):
             record.update(command=str(payload['tool_input'].get('command', ''))[:4096],
                           risk=result.risk, rule=result.rule_id)
         audit = Path.home() / 'riskgate-decisions.jsonl'
-        fd = os.open(str(audit), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'w') as out:
-            out.write(json.dumps(record, ensure_ascii=False) + '\n')
+        fd = -1
+        try:
+            fd = os.open(
+                str(audit),
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+            )
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+                or info.st_nlink != 1
+            ):
+                raise OSError('audit path is not a private regular file')
+            out = os.fdopen(fd, 'a', encoding='utf-8')
+            fd = -1
+            with out:
+                out.write(json.dumps(record, ensure_ascii=False) + '\n')
+        finally:
+            if fd != -1:
+                os.close(fd)
         return verdict
     except Exception:
         raise GuardError('riskgate verification failed. Check the policy and run it again.') from None

@@ -5,16 +5,14 @@ Why confine it. Through `bl config agent`, `bl` can touch the settings of other 
 globally on the host, it is installed only inside a guard-owned isolated home, so user projects, the real
 home, other isolated homes, and the Keychain stay invisible under the existing Seatbelt policy.
 
-Why only the login runs on the host. `bl usage token-plan` requires a console login token rather than an
-API key, and the login opens a callback server on a random 127.0.0.1 port and launches a browser.
-Both are blocked in the sandbox, so the one-time login runs on the host, but HOME and `BAILIAN_CONFIG_DIR`
-are pinned to the isolated home so the token does not end up outside it. Every query after that is inside the sandbox.
+Console login stays inside Seatbelt too. A scoped preload maps the CLI's random loopback callback to
+the one port granted by the supervisor. The CLI prints its login URL when browser opening is denied;
+the operator opens that URL manually. No executable from the writable isolated home runs on the host.
 """
 import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]  # install/repo root; this file lives in adapters/
@@ -112,7 +110,8 @@ def run_sandboxed(command, domains):
     """Run bl inside Seatbelt with the guard-owned workspace and the persistent isolated home."""
     # On every run bl prints two lines of the Node experimental feature warning (UNDICI-EHPA) that hide the result.
     status = agentbelt.run_confined('usage', usage_workspace(), command, sorted(set(domains)),
-                                      extra_env={'TZ': host_time_zone(), 'NODE_OPTIONS': '--no-warnings'})
+                                      extra_env={'TZ': host_time_zone(), 'NODE_OPTIONS': '--no-warnings'},
+                                      github=False, short_tmpdir=True)
     if status == 3:
         # Exit code 3 from bl means an authentication problem. The guidance of bl (`bl auth login --console`) stores into the
         # host home, so point at our command that uses the isolated home instead.
@@ -120,26 +119,22 @@ def run_sandboxed(command, domains):
     return status
 
 
-def login_on_host(home):
-    """One console login. It runs outside the sandbox, but HOME and the settings directory are pinned to the isolated home.
-
-    It cannot run inside the sandbox because a browser is opened and a local callback port is needed.
-    Only a minimal environment is passed. The settings directory variables of other agents are left out on purpose
-    so that anything like `bl config agent` cannot find the real settings.
-    """
+def login_in_sandbox(home):
+    """Keep even a modified CLI confined; open only its one browser callback port."""
     entry = bl_entry(home)
     if not entry.is_file():
         raise agentbelt.GuardError('bl is not installed in the isolated home yet; run agentbelt usage setup first.')
     profile = load_profile()
-    env = {
-        'HOME': str(home), 'BAILIAN_CONFIG_DIR': str(home / '.bailian'),
-        'PATH': ':'.join([str(agentbelt.NODE.parent), '/usr/bin', '/bin']),
-        'TMPDIR': str(agentbelt.private_dir(home / 'tmp')),
-        'DO_NOT_TRACK': '1', 'LANG': 'en_US.UTF-8', 'TERM': os.environ.get('TERM', 'xterm-256color'),
-    }
-    print('Console login opens your browser once; the token is stored only in the isolated home.', file=sys.stderr)
-    return subprocess.call([str(agentbelt.NODE), str(entry), 'auth', 'login', '--console',
-                            '--console-site', profile['consoleSite']], env=env, cwd=str(home))
+    bootstrap = ROOT / 'usage_login_bootstrap.cjs'
+    print('Open the login URL printed below in your browser. Login stays inside the sandbox.', file=sys.stderr)
+    return agentbelt.run_confined(
+        'usage', usage_workspace(),
+        [str(agentbelt.NODE), str(entry), 'auth', 'login', '--console', '--console-site', profile['consoleSite']],
+        domains=profile['domains'], extra_reads=[bootstrap],
+        extra_env={'BAILIAN_CONFIG_DIR': str(home / '.bailian'), 'TZ': host_time_zone(),
+                   'AGENTBELT_USAGE_LOGIN_ENTRY': str(entry),
+                   'NODE_OPTIONS': '--no-warnings --import ' + bootstrap.as_uri()},
+        loopback_port=True, github=False, short_tmpdir=True)
 
 
 def run_usage(arguments):
@@ -151,7 +146,7 @@ def run_usage(arguments):
         status = run_sandboxed(install_command(profile), profile['domains'] + development['packageDomains'])
         if status != 0:
             raise agentbelt.GuardError('bailian-cli install failed inside the isolated home; see npm output above.')
-        return login_on_host(home)
+        return login_in_sandbox(home)
     if arguments == ['login']:
-        return login_on_host(home)
+        return login_in_sandbox(home)
     return run_sandboxed(query_command(home, profile, arguments), profile['domains'])

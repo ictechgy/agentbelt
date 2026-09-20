@@ -29,9 +29,9 @@ config. The Seatbelt policy is applied before the agent starts and cannot be wid
 | --- | --- | --- |
 | `safecode` | [OpenCode](https://opencode.ai) TUI in the current directory | protected config directory, provider allowlist, supervisor-side review relay |
 | `opencode-safe <path>` | OpenCode with an explicit project path | same policy as `safecode` |
-| `safekimi` | [Kimi Code](https://www.kimi.com/code) CLI in the current directory | clipboard denied in the kernel, device-code login inside the sandbox, directory watching without FSEvents |
-| `token-usage` | Alibaba Token Plan usage CLI | isolated install; the one-time console login runs on the host |
-| Zcode Safe.app | Zcode desktop with a confined agent backend | Dock launcher built from `ZcodeSafe.swift`; per-tool policy via riskgate |
+| `safekimi` | [Kimi Code](https://www.kimi.com/code) CLI in the current directory | native/terminal clipboard access blocked, diagnostic uploads and banners disabled, loopback-only web, device-code login |
+| `token-usage` | Alibaba Token Plan usage CLI | installation, login and queries stay confined; open the printed login URL in your browser |
+| Zcode Safe.app | Original desktop launch blocked | Optional verified private copy; the guarded CLI backend remains available |
 | `autoclaw-backend` | AutoClaw's bundled Zcode CLI | installed by `adapters/install_autoclaw.py`; no host `exec` for the outer agent |
 
 Every integration is optional. `agentbelt doctor` reports which ones are installed and whether their
@@ -70,9 +70,90 @@ For Kimi Code there is nothing to import: `cd ~/my-project && safekimi`, then `/
 session. The device-code URL is printed; open it in your browser. The token stays in that project's
 isolated home.
 
+`token-usage setup` installs its CLI inside its isolated home, then starts a confined console login.
+Open the printed URL in your browser; only the allocated loopback callback port is reachable.
+Use `token-usage login` to renew the console session. Usage and verification helpers do not receive
+repository GitHub credentials.
+
 Re-running `install.sh` upgrades the code in place. It never touches `state/` (isolated homes,
 credentials, baselines) and never overwrites an existing `config.json`. `init` only fills in what is
-missing and never overwrites a file it finds.
+missing and never overwrites a file it finds. If Zcode Safe.app is already installed, update its
+managed launcher explicitly after installing the code:
+
+```sh
+/usr/bin/python3 ~/.local/share/agentbelt/adapters/install_profiles.py --upgrade-launcher
+```
+
+`installation.json` records the selected root/bin only after installation succeeds. The Safe app
+records its root in the bundle for status and history operations, including customized installations.
+It does not launch or reactivate the original Zcode GUI. When the verified private copy is installed,
+the Safe manager opens that copy instead. Backend confinement cannot block the GUI's separate
+repository uploader. Existing desktop sessions are not terminated; close both Zcode apps before
+installing or upgrading the private copy.
+Launching the original Zcode application directly remains outside agentbelt's protection.
+
+### Private Zcode snapshot-blocked copy (optional)
+
+The native Safe manager has a separate private-copy route for repositories that need a desktop
+window. The installer is a Python API; there is no standalone private-copy CLI. Close both the
+original and private Zcode apps before installing:
+
+```sh
+/usr/bin/python3 -I <<'PY'
+import sys
+from pathlib import Path
+root = Path.home() / '.local/share/agentbelt'
+sys.path.insert(0, str(root))
+from adapters.zcode_privacy import install
+install(root)
+PY
+```
+
+After upgrading the Safe app, register its bundle and select it as the `zcode://` handler.
+The first command shows the former handler so it can be recorded for rollback:
+
+```sh
+"$HOME/Applications/Zcode Safe.app/Contents/MacOS/launch" --protocol-status
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Applications/Zcode Safe.app"
+"$HOME/Applications/Zcode Safe.app/Contents/MacOS/launch" --register-zcode-protocol
+```
+
+Then open Zcode Safe.app to launch the verified private copy. The legacy original GUI gates
+remain blocked. Each installation creates a new generation; do not copy a manifest between roots.
+
+The copy is version-locked to `3.12.3`, uses bundle ID
+`local.agentbelt.zcode.snapshot-blocked`, and lives below the guard root. `check-zcode-private`
+verifies its manifest and executable hash and returns a 32-character lowercase `generation`; the
+manager accepts only the matching app path, generation-bound backend argv, private profile/session
+directories, and the explicit flags that snapshot uploads and automatic updates are blocked. The
+updater and the clone's startup protocol registration stay disabled.
+
+The backend continues through the existing Seatbelt path. The desktop GUI itself is not OS
+sandboxed, so `safe_launch` remains `false` and a backend receipt does not establish GUI
+confinement. The private copy shares `~/.zcode`; its private Chromium user-data and session
+directories are under `<install>/state/zcode-private/user-data` and
+`<install>/state/zcode-private/session`. The manager can handle the `zcode://` route and forward
+URLs to the verified private copy by explicit app path; OAuth values are not placed in argv, logs,
+or files. Manual uploads and telemetry other than the snapshot patch remain outside this boundary.
+Existing `check-zcode`, `check-zcode-gui`, `record-zcode-launch`, and `zcode-app` GUI gates remain
+blocked. Real account, model, and OAuth execution have not been tested. A strict offline GUI-window
+test was unavailable because both the original and private copy abort under the CLI sandbox; that
+does not establish GUI confinement.
+
+### Packet review privacy
+
+`packet-ask-safe` and the GLM/Qwen `packet-review` relay separate collection from model execution.
+The collector has read-only access to the original workspace, no network, no model credentials,
+and an ephemeral home. Its bounded, scrubbed export becomes the only file in a fresh staging
+workspace. The reviewer receives that staging workspace read-only and its own ephemeral home.
+Qwen receives only the selected provider credential and domain, with tools disabled. Collector
+or export verification failure stops the request before model credentials are obtained.
+
+The ordinary upstream `packet-ask` command is still a separate text-scrubbing CLI, without an OS
+sandbox. Use the protected entry points for this boundary. Scrubbing removes recognized patterns;
+source code and unrecognized confidential text in the selected packet still reach the chosen
+model API. There is no separate packet-ask service. Provider-side storage and training are outside
+this local tool's control. `--preview` and `--dry-run` never launch the model.
 
 ### Trust on first install
 
@@ -81,25 +162,43 @@ binary refuses to launch until `agentbelt verify-updates` re-runs the test suite
 hash. That is deliberate: an agent that updates itself is also an agent whose clipboard, network and
 file behavior may have changed.
 
+OpenCode and Kimi version probes execute protected copies inside Seatbelt with no network or
+repository credentials. Packet-ask promotions are serialized across sessions and roll back if
+installation or verification fails. Other packet operations wait until the installation is stable.
+An interrupted promotion or failed rollback leaves packet execution blocked until the host install
+is repaired; an uncertain installation is never accepted by restoring only its version label.
+Normal OpenCode and Kimi launches also execute the verified copy, so replacing the original
+binary between verification and execution cannot change the running version.
+
 ## Known limits
 
 These are documented boundaries, not oversights:
 
 - **Network allowlists are per host, not per path.** An agent allowed to reach `api.example.com` can
   reach every path on that host. A path-level broker is future work.
-- **The terminal is outside the sandbox.** If your terminal answers OSC 52 clipboard *read* queries,
-  any child process can read the clipboard through it. Check yours; the one used during development
-  does not answer.
+- **Terminal access goes through a private PTY.** All outgoing text, including
+  piped/redirected stdout and stderr, passes through the host filter. It removes OSC 52 and
+  unreviewed OSC/DCS/APC strings, including tmux passthrough. Native pasteboard access
+  remains denied. UTF-8 text, normal styling, input, resize and signals are preserved;
+  terminal image/passthrough protocols are unavailable. Text you paste is still input.
+  Write binary exports to workspace files rather than these text output streams.
+- **Kimi's verified execution copy disables diagnostic feedback and remote banners,
+  and refuses non-loopback web binding.** These restrictions survive re-execution
+  without `NODE_OPTIONS`. The original binary is unchanged; unknown builds fail closed
+  until their privacy patch is reviewed. This is not an HTTPS firewall against arbitrary code.
+- **Homebrew reads are limited to runtime roots and exact CA/OpenSSL files.** The
+  general `etc`, `var` and `Caskroom` trees are outside the read allowance.
 - **The agent's own config is writable across sessions** for agents that need it at login time (Kimi
   Code). A session can plant configuration that the next session in the same project reads. The
   effect stays inside the sandbox.
 - **A GitHub token, when injected, is visible to the session.** The model never sees it directly, but
   an agent that prints its environment puts it in context. Inject it only for projects where you
   want the agent to push.
-- **`/opt/homebrew` is readable except `var`.** Tool binaries need it; configuration under `etc` and
-  the Cellar are visible.
 - **Prompts inside the sandbox are not proof of a human.** Anything that needs a real approval
   happens on the host, before launch, as policy.
+
+- **The Gemini/agy review relay is disabled.** Its host agent had no enforced confinement.
+  Use `packet-review --provider glm` or `--provider qwen`.
 
 ## Things we learned the hard way
 
@@ -135,7 +234,7 @@ adapters/               host-side only: kimi_cli, usage_cli, configure_existing,
                         bootstrap (init), packet_relay, orca_broker, install_autoclaw, ...
 ZcodeSafe.swift         Dock launcher for the Zcode desktop integration
 examples/riskgate.yaml  policy installed by `init` when you have none
-tests/                  319 regressions; most run a real Seatbelt profile and read the kernel's answer
+tests/                  regressions, including real Seatbelt boundary and synthetic failure tests
 vendor/riskgate         vendored policy engine (MIT)
 docs/                   ARCHITECTURE.md, design notes (docs/design), Korean docs (docs/ko)
 ```

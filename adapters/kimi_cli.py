@@ -5,7 +5,7 @@ native clipboard bindings (`@mariozechner/clipboard`, NSPasteboard), `pbcopy`, a
 paths for telemetry (`telemetry-logs.kimi.*`), auto-update (`code.kimi.*`), the plugin market, WebBridge/Computer-Use
 binary downloads (`cdn.kimi.com`), and launchd service registration (`ai.kimi.cu.service`). It is wrapped in the same
 Seatbelt boundary as safecode (one workspace + a per-project isolated home + a domain allow list), and the clipboard is
-made unreadable through every path (native, pbpaste, JXA) by denying the pasteboard mach service in the kernel (`sandbox_runner.mjs`).
+blocked at native services (`sandbox_runner.mjs`) and at the host terminal relay (`terminal_proxy.py`).
 
 Why login works inside the session. The login of Kimi is a device code flow (`auth.kimi.*/api/oauth/device_authorization`),
 so it needs no local callback port. Opening the browser automatically (`open`) fails in the sandbox, but the URL is printed
@@ -41,11 +41,12 @@ WATCH_BOOTSTRAP = ROOT / 'kimi_watch_bootstrap.cjs'
 
 # Kimi-only section appended to the session start notice. Makes the agent aware of the clipboard block and the login procedure.
 KIMI_NOTICE = ('## Kimi Code\n\n'
-               '- The system clipboard is **blocked in the kernel for both reading and writing** (the pasteboard service is denied). Pasting images, `/copy`,\n'
+               '- Native clipboard access is blocked by the kernel, and the host terminal relay removes OSC 52 and passthrough strings. Pasting images, `/copy`,\n'
                '  `pbpaste`, `pbcopy`, and osascript clipboard access all fail; that is by design, not a failure. Do not look for a workaround.\n'
                '- Log in inside this session with `/login`. When the device code URL is printed on screen, the user opens it in a browser\n'
                '  (automatic opening does not work here). The token stays only in `$KIMI_CODE_HOME/credentials/`.\n'
                '- Auto-update, telemetry, the plugin market, WebBridge, and Computer-Use are turned off or outside the domain list. Do not try to install them.\n'
+               '- The verified Kimi runtime disables diagnostic feedback uploads and remote banners, and refuses non-loopback web binding even when re-executed without the preload.\n'
                '- The Kimi settings home is `$KIMI_CODE_HOME`. The `~/.kimi-code` of the host is not visible.\n'
                '- `NODE_OPTIONS` carries the supervisor preload (so that directory watching runs without FSEvents). Do not remove it.\n'
                '  File change detection is polling, so settings and skills can take a few seconds to be picked up.\n')
@@ -65,7 +66,7 @@ def load_profile():
     if profile.get('region') not in REGION_DOMAINS:
         raise agentbelt.GuardError('state/kimi-profile.json region must be "global" or "mainland-cn".')
     domains = profile.get('domains')
-    reviewed = {domain for region in REGION_DOMAINS.values() for domain in region}
+    reviewed = set(REGION_DOMAINS[profile['region']])
     # Reject wildcards, other ports, and hosts outside the review (review LOW: `*.kimi.ai:443` would reopen the telemetry and update hosts).
     if not isinstance(domains, list) or not domains or not all(isinstance(d, str) and d in reviewed for d in domains):
         raise agentbelt.GuardError('state/kimi-profile.json domains must be a non-empty subset of the reviewed Kimi hosts: '
@@ -90,7 +91,7 @@ def kimi_environment(home, binary=None):
         # internal FSWatcher of chokidar has no error listener, so that EMFILE kills the process. chokidar switches to stat polling
         # and the preload turns the remaining directory fs.watch into an inert watcher. With only one of the two it still dies or is noisy.
         'CHOKIDAR_USEPOLLING': '1',
-        'NODE_OPTIONS': '--require ' + str(WATCH_BOOTSTRAP),
+        'NODE_OPTIONS': '--require ' + json.dumps(str(WATCH_BOOTSTRAP), ensure_ascii=False),
     }
 
 
@@ -129,6 +130,8 @@ def run_kimi(arguments):
 
 def launch_kimi(workspace, binary, arguments, domains, profile, development, publish_credentials, notice):
     """Call run_confined with the verified copy. Split out of run_kimi so the cleanup (finally) and the wiring can be checked separately."""
+    # 브라우저가 없는 자식을 위한 호스트 스크린샷 큐 — 이미 떠 있으면 재사용한다.
+    agentbelt.ensure_shot_watcher(workspace)
     return agentbelt.run_confined(
         'kimi', workspace, [str(binary), *arguments], domains,
         extra_reads=[binary, WATCH_BOOTSTRAP],
@@ -137,7 +140,7 @@ def launch_kimi(workspace, binary, arguments, domains, profile, development, pub
         dev_ports=development['devPorts'],
         instruction_files=[INSTRUCTIONS_RELATIVE],
         notice_extra=notice,
-        loopback_port=True,
+        loopback_port=True, github=True,
         config_credentials=publish_credentials,
         loopback_all=agentbelt.loopback_grant(workspace),
         allow_gradle_keystore=agentbelt.gradle_keystore_grant(workspace))

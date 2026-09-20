@@ -533,13 +533,19 @@ def ensure_shot_watcher(workspace):
     and exits on its own after an idle stretch -- no persistent daemon is installed.
     Convenience only: any failure here must never block a launch.
     """
+    queue_fd = None
     try:
-        queue = Path(workspace) / 'shots'
-        lock = queue / '.watcher.lock'
-        if lock.is_file():
+        script = ROOT / 'shot_watcher.py'
+        if not script.is_file():
+            return
+        sys.path.insert(0, str(ROOT))
+        import shot_queue
+        queue_fd = shot_queue.open_shot_queue(workspace, create=True)
+        pid = shot_queue.read_lock_pid(queue_fd)
+        if pid is not None:
             alive = False
             try:
-                os.kill(int(lock.read_text().strip()), 0)
+                os.kill(pid, 0)
                 alive = True
             except PermissionError:
                 alive = True
@@ -547,23 +553,22 @@ def ensure_shot_watcher(workspace):
                 pass
             if alive:
                 return
-            try:
-                lock.unlink()
-            except OSError:
-                return
-        script = ROOT / 'shot_watcher.py'
-        if not script.is_file():
-            return
-        queue.mkdir(exist_ok=True)
-        log = open(queue / '.watcher.log', 'ab', buffering=0)
-        try:
-            subprocess.Popen(['/usr/bin/python3', str(script), str(workspace)],
+        shot_queue.unlink_name(queue_fd, '.watcher.lock')
+        # Do not resolve a driver or Python startup hook from the writable project.
+        environment = {'PATH': ':'.join([str(NODE.parent), str(OWNER_HOME / '.local/bin'),
+                                        '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']),
+                       'LANG': 'en_US.UTF-8'}
+        if os.environ.get('SHOT_WATCHER_CHROME'):
+            environment['SHOT_WATCHER_CHROME'] = os.environ['SHOT_WATCHER_CHROME']
+        with os.fdopen(shot_queue.open_queue_log(queue_fd), 'ab', buffering=0) as log:
+            subprocess.Popen(['/usr/bin/python3', '-I', str(script), str(workspace)],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                             start_new_session=True)
-        finally:
-            log.close()
+                             cwd=ROOT, env=environment, close_fds=True, start_new_session=True)
     except OSError:
         pass
+    finally:
+        if queue_fd is not None:
+            os.close(queue_fd)
 
 
 def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_reads=(), ephemeral=False,
@@ -571,7 +576,7 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
                  protect_opencode_config=False, opencode_plugins=(), instruction_files=(), notice_extra='',
                  loopback_port=False, config_credentials=(), github=False, read_only_workspace_paths=(),
                  short_tmpdir=False, loopback_all=False, allow_gradle_keystore=False, stderr=None, timeout=None,
-                 read_only_workspace=False, blocked_workspace_paths=()):
+                 read_only_workspace=False, blocked_workspace_paths=(), cancel_event=None):
     if sys.platform != 'darwin' or not Path('/usr/bin/sandbox-exec').exists():
         raise GuardError('This launcher requires macOS Seatbelt; there is no unsandboxed fallback.')
     if not NODE.is_file() or not (ROOT / 'runtime/node_modules/@anthropic-ai/sandbox-runtime/package.json').is_file():
@@ -698,7 +703,7 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         options = dict(cwd=workspace, env=env, umask=0o077, stdout=stdout, stdin=stdin, stderr=stderr)
         import terminal_proxy
         try:
-            status = terminal_proxy.run(invocation, timeout=timeout, **options)
+            status = terminal_proxy.run(invocation, timeout=timeout, cancel_event=cancel_event, **options)
         except subprocess.TimeoutExpired:
             raise GuardError('The confined command exceeded its time limit.') from None
         except terminal_proxy.TerminalError as error:
@@ -1160,7 +1165,7 @@ def review_provider_assets(base, auth, model):
     return review_config(base, model), auth, profile['domains']
 
 
-def run_opencode_review(workspace, prompt, stdout=None, stderr=None, timeout=None, deadline=None):
+def run_opencode_review(workspace, prompt, stdout=None, stderr=None, timeout=None, deadline=None, cancel_event=None):
     """Review a prepared packet with one provider and no original-workspace authority."""
     verify_opencode_binary()
     base = ROOT / 'state/opencode-config.json'
@@ -1192,7 +1197,7 @@ def run_opencode_review(workspace, prompt, stdout=None, stderr=None, timeout=Non
                                 domains, {'OPENCODE_CONFIG': str(config_file)}, [config_file, selected_auth, staged],
                                 prepare_home=prepare, read_only_home_paths=['.local/share/opencode/auth.json'],
                                 protect_opencode_config=True, stdout=stdout, stderr=stderr, stdin=prompt_input,
-                                ephemeral=True, read_only_workspace=True, timeout=timeout)
+                                ephemeral=True, read_only_workspace=True, timeout=timeout, cancel_event=cancel_event)
         finally:
             discard_staged_binary(staged)
 
@@ -1623,22 +1628,60 @@ def packet_provider_status(arguments):
     return 0 if ready else 2
 
 
-def read_packet_glm_keychain():
+def read_packet_glm_keychain(cancel_event=None, deadline=None):
     """Only called after the operator explicitly supplies --use-keychain."""
     code = ('from importlib.metadata import version; import sys; '
             'assert version("packet-ask") == "' + packet_ask_pinned_version() + '"; '
             'from packet_ask.keysource import resolve_provider_key; '
             'sys.stdout.write(resolve_provider_key("glm", "keychain"))')
-    result = subprocess.run([str(PACKET_PYTHON), '-I', '-c', code],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            env={'HOME': str(OWNER_HOME), 'PATH': '/usr/bin:/bin', 'LANG': 'en_US.UTF-8'},
-                            text=True, timeout=35)
+    command = [str(PACKET_PYTHON), '-I', '-c', code]
+    options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                   env={'HOME': str(OWNER_HOME), 'PATH': '/usr/bin:/bin', 'LANG': 'en_US.UTF-8'}, text=True)
+    if cancel_event is None and deadline is None:
+        result = subprocess.run(command, timeout=35, **options)
+    else:
+        import signal
+        end = min(time.monotonic() + 35, deadline) if deadline is not None else time.monotonic() + 35
+        if cancel_event is not None and cancel_event.is_set():
+            raise GuardError('The packet review was cancelled before credential access.')
+        if end <= time.monotonic():
+            raise GuardError('The packet review deadline expired before credential access.')
+        process = subprocess.Popen(command, start_new_session=True, **options)
+        try:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GuardError('The packet review was cancelled during credential access.')
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    raise GuardError('The packet review deadline expired during credential access.')
+                try:
+                    output, _ = process.communicate(timeout=min(.1, remaining))
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise GuardError('The packet review was cancelled during credential access.')
+                    result = subprocess.CompletedProcess(command, process.returncode, output)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=1)
+            raise
     if result.returncode or not result.stdout.strip():
         raise GuardError('Could not obtain the dedicated packet-ask-glm credential.')
     return result.stdout.strip()
 
 
-def prepare_packet_request(arguments, use_keychain=False):
+def prepare_packet_request(arguments, use_keychain=False, cancel_event=None, deadline=None):
     # The adapter (packet_entry.py) does not read the file inside the sandbox; it compares this value with the installation.
     env = {'PACKET_ASK_CLAUDE_BIN': str(CLAUDE.resolve()),
            'AGENTBELT_PACKET_ASK_VERSION': packet_ask_pinned_version()}
@@ -1660,7 +1703,8 @@ def prepare_packet_request(arguments, use_keychain=False):
         raise GuardError('Use the dedicated environment key or --use-keychain instead of --credential-source.')
     key = os.environ.get('PACKET_ASK_GLM_KEY', '')
     if not key and use_keychain:
-        key = read_packet_glm_keychain()
+        key = (read_packet_glm_keychain(cancel_event=cancel_event, deadline=deadline)
+               if cancel_event is not None or deadline is not None else read_packet_glm_keychain())
     if not key or len(key) < 8 or len(key) > 4096 or any(c.isspace() for c in key):
         raise GuardError('Supply PACKET_ASK_GLM_KEY or use --use-keychain for the dedicated packet-ask-glm item.')
     env['PACKET_ASK_GLM_KEY'] = key
@@ -2099,6 +2143,11 @@ def main(argv=None):
     sys.path.insert(0, str(ROOT))
     from adapters import packet_transaction
     try:
+        # Live packet pipelines own a deadline-aware consumer lock. Taking an
+        # outer blocking lock here would hide promotion wait time from them.
+        if args.mode == 'packet-qwen' or (remaining and remaining[0] in {'review', 'research'}
+                and not any(flag in remaining for flag in ('--preview', '--dry-run', '--help', '-h'))):
+            return run_packet_mode(args, remaining)
         with packet_transaction.consumer(ROOT / 'state/packet-ask-version.json'):
             return run_packet_mode(args, remaining)
     except packet_transaction.TransactionError as error:

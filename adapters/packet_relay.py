@@ -52,6 +52,7 @@ echo "packet-promote: timed out" >&2; exit 124
 '''
 # timeoutSeconds: 30 minutes, matching the measurement where the qwen reviewer took more than 9 minutes on a large repository .
 DEFAULT_SETTINGS = {'maxPerHour': 6, 'maxQuestionBytes': 16384, 'maxFiles': 40, 'pollSeconds': 1.0, 'timeoutSeconds': 1800}
+REVIEW_CANCEL_GRACE_SECONDS = 5
 EFFORTS = {'low', 'medium', 'high', 'xhigh', 'max'}
 # glm: packet-ask (a scrubbed packet). qwen: the same staged packet is handed to a read-only reviewer.
 PROVIDERS = {'glm', 'qwen'}
@@ -217,7 +218,7 @@ def extract_review_text(json_lines):
     return '\n'.join(texts)
 
 
-def host_runner(provider, prepared, workspace):
+def host_runner(provider, prepared, workspace, cancel_event=None):
     """Run the two-stage protected path for the selected provider.
 
     Both providers collect through the keyless packet-ask dry-run first.  The
@@ -240,22 +241,29 @@ def host_runner(provider, prepared, workspace):
     timeout = _relay_timeout(prepared.get('arguments', []))
     if timeout is None:
         return 1, '', 'packet-review timeout is invalid or exceeds the 1800-second limit'
+    deadline = time.monotonic() + timeout
 
     output = TemporaryFile(mode='w+b')
     errors = TemporaryFile(mode='w+b')
     try:
         try:
-            with packet_transaction.consumer(ROOT / 'state/packet-ask-version.json'):
-                status = packet_pipeline.run(
-                    prepared['arguments'],
-                    use_keychain=True,
-                    workspace=workspace,
-                    provider=provider,
-                    question=prepared['question'],
-                    stdout=output,
-                    stderr=errors,
-                    operation_timeout=timeout,
-                )
+            status = packet_pipeline.run(
+                prepared['arguments'],
+                use_keychain=True,
+                workspace=workspace,
+                provider=provider,
+                question=prepared['question'],
+                stdout=output,
+                stderr=errors,
+                operation_timeout=timeout,
+                deadline=deadline,
+                cancel_event=cancel_event,
+                transaction_state_file=ROOT / 'state/packet-ask-version.json',
+            )
+        except packet_transaction.TransactionCancelled:
+            return 130, '', 'packet-review was cancelled'
+        except packet_transaction.TransactionTimeout:
+            return 124, '', 'packet-review exceeded its time limit waiting for packet promotion'
         except agentbelt.GuardError as problem:
             return 1, '', str(problem)
         output.seek(0)
@@ -309,14 +317,17 @@ class PacketRelay:
         self.write_root = self.home
         self.started = []  # Recent run timestamps. Used for the hourly limit.
         self.stop = threading.Event()
-        # A live promotion is part of the supervisor lifetime.  A non-daemon
-        # watcher cannot silently release its transaction lock at interpreter
-        # shutdown while an installer it started keeps mutating the uv tool.
-        self.thread = threading.Thread(target=self._watch, daemon=False)
+        # Ordinary reviews are cancellable during shutdown. Promotion remains a
+        # durable transaction because __exit__ waits for that provider without a
+        # deadline before allowing the supervisor stack to unwind.
+        self.thread = threading.Thread(target=self._watch, daemon=True)
         self._scan = None
         self._scan_path = None
         self._previous_sigterm = None
         self._termination_started = False
+        self._active_lock = threading.Lock()
+        self._active_provider = None
+        self._active_cancel = None
 
     def prepare(self, home, env):
         """The prepare_home hook of run_confined. It plants the helpers, creates the request directory and puts them first on PATH.
@@ -367,12 +378,23 @@ class PacketRelay:
         return self
 
     def __exit__(self, *details):
+        # A normal context exit has already committed to cleanup. A SIGTERM that
+        # arrives during the join must not unwind this second cleanup frame and
+        # abandon an active promotion transaction.
+        self._termination_started = True
         self.stop.set()
-        # _watch runs each request synchronously.  Waiting without an arbitrary
-        # timeout keeps the supervisor and promotion rollback authority alive
-        # until the active request has reached a durable result.
+        with self._active_lock:
+            active_provider = self._active_provider
+            if active_provider != 'promote' and self._active_cancel is not None:
+                self._active_cancel.set()
+        # Promotion and rollback retain their exclusive authority until they
+        # publish or restore durable state. Ordinary model calls get a bounded
+        # cleanup window after their cancellation reaches terminal_proxy.
         try:
-            self.thread.join()
+            if active_provider == 'promote':
+                self.thread.join()
+            else:
+                self.thread.join(timeout=REVIEW_CANCEL_GRACE_SECONDS)
         finally:
             self._restore_sigterm()
 
@@ -500,10 +522,27 @@ class PacketRelay:
             self._write(error, str(problem))
             return
         self._record(stem, payload)
+        with self._active_lock:
+            if self.stop.is_set():
+                return
+            cancel_event = threading.Event()
+            self._active_provider = prepared['provider']
+            self._active_cancel = cancel_event
         try:
-            status, out, err = self.runner(prepared['provider'], prepared, self.workspace)
+            if self.runner is host_runner:
+                status, out, err = self.runner(
+                    prepared['provider'], prepared, self.workspace, cancel_event=cancel_event)
+            else:
+                status, out, err = self.runner(prepared['provider'], prepared, self.workspace)
         except Exception as problem:
             self._write(error, 'packet-ask could not be started: ' + type(problem).__name__)
+            return
+        finally:
+            with self._active_lock:
+                if self._active_cancel is cancel_event:
+                    self._active_provider = None
+                    self._active_cancel = None
+        if cancel_event.is_set() and prepared['provider'] != 'promote':
             return
         if status != 0:
             note = ''

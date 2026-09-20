@@ -174,7 +174,8 @@ print('MODEL_BOUNDARY_OK')
             with tempfile.TemporaryFile() as out, patch.dict(os.environ, {'PACKET_ASK_GLM_KEY': 'SYNTHETIC_FIXTURE_KEY'}):
                 status = packet_pipeline.run(['review', '--provider', 'glm', '--files', 'selected.py',
                                               '--question', 'Review the selected code'],
-                                             workspace=work, runner=confined, stdout=out)
+                                             workspace=work, runner=confined, stdout=out,
+                                             transaction_state_file=work / 'packet-version.json')
                 out.seek(0)
                 self.assertEqual(status, 0)
                 self.assertEqual(out.read().decode().strip(), 'MODEL_BOUNDARY_OK')

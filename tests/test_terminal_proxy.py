@@ -11,11 +11,13 @@ import subprocess
 import sys
 import tempfile
 import termios
+import threading
 import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import terminal_proxy
 from terminal_proxy import TerminalFilter
 
 
@@ -227,6 +229,61 @@ print('RESTORED='+str(before==after),flush=True)
         output = self.run_pty(driver)
         self.assertIn(b'TIMEOUT', output)
         self.assertIn(b'RESTORED=True', output)
+
+    def test_cancel_event_stops_a_nonterminal_child(self):
+        cancel = threading.Event()
+        timer = threading.Timer(.1, cancel.set)
+        timer.start()
+        started = time.monotonic()
+        try:
+            status = terminal_proxy.run(
+                ['/bin/sleep', '10'], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=10, cancel_event=cancel)
+        finally:
+            timer.cancel()
+        self.assertEqual(status, terminal_proxy.CANCELLED_STATUS)
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_slow_output_destination_receives_every_parent_byte(self):
+        read_fd, write_fd = os.pipe()
+        received = bytearray()
+
+        def consume_slowly():
+            while True:
+                chunk = os.read(read_fd, 4096)
+                if not chunk:
+                    return
+                received.extend(chunk)
+                time.sleep(.04)
+
+        consumer = threading.Thread(target=consume_slowly)
+        consumer.start()
+        code = ('import os; data=b"x"*200000\n'
+                'while data:\n n=os.write(1,data); data=data[n:]')
+        try:
+            status = terminal_proxy.run(
+                ['/usr/bin/python3', '-I', '-c', code], stdin=subprocess.DEVNULL,
+                stdout=write_fd, stderr=subprocess.DEVNULL, timeout=10)
+        finally:
+            os.close(write_fd)
+            consumer.join(5)
+            os.close(read_fd)
+        self.assertEqual(status, 0)
+        self.assertFalse(consumer.is_alive())
+        self.assertEqual(len(received), 200000)
+        self.assertEqual(set(received), {ord('x')})
+
+    def test_silent_orphan_does_not_hold_output_open(self):
+        code = ('import subprocess; '
+                'subprocess.Popen(["/bin/sleep","1"], stdout=None, stderr=None)')
+        started = time.monotonic()
+        with tempfile.TemporaryFile() as output:
+            status = terminal_proxy.run(
+                ['/usr/bin/python3', '-I', '-c', code], stdin=subprocess.DEVNULL,
+                stdout=output, stderr=subprocess.DEVNULL, timeout=3)
+        self.assertEqual(status, 0)
+        self.assertLess(time.monotonic() - started, 1)
 
 
 if __name__ == '__main__':

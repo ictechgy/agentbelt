@@ -256,10 +256,23 @@ def _safe_relative(path: Path, root: Path) -> str:
         raise _error("path escapes bundle root: " + str(path)) from None
 
 
-def _walk_bundle(root: Path) -> Iterable[tuple[Path, os.stat_result]]:
-    """Yield all bundle entries while rejecting external links and hardlinks."""
+def _bundle_owner_allowed(uid: int, *, source: bool) -> bool:
+    """Allow system ownership only for the immutable, independently verified source."""
 
-    _assert_owner(root, "directory")
+    return uid == os.getuid() or (source and uid == 0)
+
+
+def _walk_bundle(root: Path, *, source: bool = False) -> Iterable[tuple[Path, os.stat_result]]:
+    """Yield bundle entries while rejecting foreign owners, external links and hardlinks."""
+
+    try:
+        root_info = root.lstat()
+    except OSError:
+        raise _error("missing bundle root: " + str(root)) from None
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise _error("bundle root is not a non-symlink directory: " + str(root))
+    if not _bundle_owner_allowed(root_info.st_uid, source=source):
+        raise _error("bundle root has an untrusted owner: " + str(root))
     root_resolved = root.resolve(strict=True)
     pending = [root]
     while pending:
@@ -273,8 +286,8 @@ def _walk_bundle(root: Path) -> Iterable[tuple[Path, os.stat_result]]:
                 info = path.lstat()
             except OSError as error:
                 raise _error("cannot inspect bundle entry: " + type(error).__name__) from None
-            if info.st_uid != os.getuid():
-                raise _error("bundle entry is not owned by the current account: " + str(path))
+            if not _bundle_owner_allowed(info.st_uid, source=source):
+                raise _error("bundle entry has an untrusted owner: " + str(path))
             if stat.S_ISLNK(info.st_mode):
                 try:
                     target = path.resolve(strict=True)
@@ -294,7 +307,7 @@ def _walk_bundle(root: Path) -> Iterable[tuple[Path, os.stat_result]]:
             yield path, info
 
 
-def bundle_digest(app: os.PathLike[str] | str) -> str:
+def bundle_digest(app: os.PathLike[str] | str, *, source: bool = False) -> str:
     """Hash the complete public bundle tree, including names, modes and links."""
 
     root = _as_path(app, "application")
@@ -302,7 +315,7 @@ def bundle_digest(app: os.PathLike[str] | str) -> str:
     # Include the root marker so a directory cannot be replaced by another
     # entry type while retaining the same child stream.
     digest.update(b"D\0\0\0")
-    entries = list(_walk_bundle(root))
+    entries = list(_walk_bundle(root, source=source))
     entries.sort(key=lambda item: _safe_relative(item[0], root))
     for path, info in entries:
         relative = _safe_relative(path, root).encode("utf-8", "surrogateescape")
@@ -805,7 +818,7 @@ def _verified_source_info(source_app: Path) -> tuple[dict[str, Any], str, str, s
     signature, identifier, team = _signature_metadata(source_app)
     if identifier != ORIGINAL_BUNDLE_ID or team != CUA_TEAM_ID:
         raise _error("source ZCode signature identity or team is not reviewed")
-    return info, asar_hash, cli_hash, signature, bundle_digest(source_app)
+    return info, asar_hash, cli_hash, signature, bundle_digest(source_app, source=True)
 
 
 def _validate_bundle_tree(app: Path, *, source: bool = False) -> None:
@@ -815,9 +828,7 @@ def _validate_bundle_tree(app: Path, *, source: bool = False) -> None:
         raise _error("application bundle is missing: " + str(app))
     # For a source app, its root need not yet be mode 700.  For private apps,
     # _private_root has already enforced owner-only state directories.
-    list(_walk_bundle(app))
-    if source:
-        return
+    list(_walk_bundle(app, source=source))
 
 
 def _run_checked(command: list[str], *, allow_missing: bool = False) -> subprocess.CompletedProcess[str]:

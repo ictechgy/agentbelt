@@ -85,6 +85,14 @@ installed runtime trees and exact trust-store files, not the entire installation
   rollback, checks restored metadata and package bytes, and leaves the pin invalid if restoration
   is uncertain. Normal shutdown and SIGTERM wait for active relay work; force-killing a promoter
   leaves the pre-invalidated pin closed.
+- **Review deadlines include lock acquisition.** Live packet pipelines take a cancellable
+  shared lock against the current guard root. Ordinary shutdown cancels credential preparation,
+  collector and model processes; an active promotion or rollback still finishes durably.
+- **Screenshot HTML is untrusted.** `shot_queue.py` pins directories and opens inputs without
+  following links; errors, logs and screenshots cannot redirect host writes through queue paths.
+  The HTTP service enforces secret-name exclusions and also acts as a non-forwarding proxy.
+  Private Chrome profiles retain their native sandbox and use isolated driver sessions, fixed CDP,
+  restrictive browser policies and proxy settings that include loopback requests.
 - **Relay work is bounded per poll.** The cursor examines at most 128 entries, consumes completed
   requests, expires responses after 24 hours, and counts malformed requests against the rate budget.
 - **`denyWrite` beats `allowWrite`; specific operations beat wildcards.** Re-allowing one file that

@@ -12,6 +12,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -52,6 +53,10 @@ class PacketPrivacyTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="packet-privacy-test-")
         self.workspace = Path(self.tmp.name) / "original"
         self.workspace.mkdir()
+        self.transaction_root = Path(self.tmp.name) / "runtime-root"
+        (self.transaction_root / "state").mkdir(parents=True)
+        self.transaction_patcher = patch.object(packet_pipeline.agentbelt, "ROOT", self.transaction_root)
+        self.transaction_patcher.start()
         (self.workspace / "safe.py").write_text(
             'print("synthetic-safe-source")\nAPI_KEY = "SYNTHETIC_RAW_SECRET"\n'
         )
@@ -64,6 +69,7 @@ class PacketPrivacyTests(unittest.TestCase):
         self.calls = []
 
     def tearDown(self):
+        self.transaction_patcher.stop()
         self.tmp.cleanup()
 
     def runner(self, mode, workspace, command, **kwargs):
@@ -85,13 +91,16 @@ class PacketPrivacyTests(unittest.TestCase):
 
     def test_collector_then_model_uses_only_scrubbed_staging_and_preserves_model_flags(self):
         key_events = []
+        cancel = threading.Event()
 
         def read_key():
             key_events.append("key")
             return "SYNTHETIC_MODEL_KEY"
 
-        def fake_prepare(arguments, use_keychain=False):
+        def fake_prepare(arguments, use_keychain=False, **kwargs):
             self.assertTrue(use_keychain)
+            self.assertIs(kwargs["cancel_event"], cancel)
+            self.assertIn("deadline", kwargs)
             key_events.append("prepare")
             self.assertIn("--effort", arguments)
             return list(arguments), ["api.z.ai:443"], {"PACKET_ASK_GLM_KEY": read_key()}
@@ -124,6 +133,8 @@ class PacketPrivacyTests(unittest.TestCase):
                 use_keychain=True,
                 workspace=self.workspace,
                 runner=ordered_runner,
+                cancel_event=cancel,
+                operation_timeout=17,
             )
 
         self.assertEqual(status, 0)
@@ -132,6 +143,7 @@ class PacketPrivacyTests(unittest.TestCase):
         self.assertEqual(collector[0], "packet-collector")
         self.assertEqual(collector[1], self.workspace.resolve())
         self.assertEqual(collector[3]["domains"], [])
+        self.assertIs(collector[3]["cancel_event"], cancel)
         self.assertTrue(collector[3]["ephemeral"])
         self.assertTrue(collector[3]["read_only_workspace"])
         self.assertNotIn("--effort", collector[2])
@@ -142,6 +154,7 @@ class PacketPrivacyTests(unittest.TestCase):
         self.assertNotEqual(model[1], self.workspace)
         self.assertTrue(model[3]["ephemeral"])
         self.assertTrue(model[3]["read_only_workspace"])
+        self.assertIs(model[3]["cancel_event"], cancel)
         self.assertIn("--effort", model[2])
         self.assertIn("high", model[2])
         self.assertIn("--timeout", model[2])
@@ -201,6 +214,65 @@ class PacketPrivacyTests(unittest.TestCase):
             )
         self.assertEqual(self.calls, [])
 
+    def test_cli_timeout_bounds_wait_for_promotion_lock(self):
+        from adapters import packet_transaction
+        state = packet_pipeline.agentbelt.ROOT / "state/packet-ask-version.json"
+        entered, release = threading.Event(), threading.Event()
+
+        def hold_promotion():
+            with packet_transaction.promotion(state, "0.13.0"):
+                entered.set()
+                release.wait(5)
+
+        holder = threading.Thread(target=hold_promotion)
+        holder.start()
+        self.assertTrue(entered.wait(2))
+        started = time.monotonic()
+        try:
+            with self.assertRaises(packet_transaction.TransactionTimeout):
+                packet_pipeline.run(
+                    ["review", "--files", "safe.py", "--question", "review", "--timeout", "1"],
+                    workspace=self.workspace,
+                    runner=lambda *args, **kwargs: self.fail("collector entered"),
+                )
+        finally:
+            release.set()
+            holder.join(2)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_one_second_timeout_reaches_runner_without_contention(self):
+        with patch.object(packet_pipeline.agentbelt, "packet_ask_pinned_version", return_value="0.12.0"), \
+             patch.object(packet_pipeline.agentbelt, "prepare_packet_request", return_value=([], [], {})):
+            status = packet_pipeline.run(
+                ["review", "--files", "safe.py", "--question", "review", "--timeout", "1"],
+                workspace=self.workspace,
+                runner=self.runner,
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual([call[0] for call in self.calls], ["packet-collector", "packet-model"])
+
+    def test_remaining_deadline_preserves_fraction_and_expires_at_zero(self):
+        with patch.object(packet_pipeline.time, "monotonic", return_value=10.25):
+            self.assertAlmostEqual(packet_pipeline._remaining_seconds(11.0), 0.75)
+            self.assertIsNone(packet_pipeline._remaining_seconds(10.25))
+            self.assertIsNone(packet_pipeline._remaining_seconds(10.0))
+
+    def test_default_transaction_state_uses_current_agentbelt_root(self):
+        from adapters import packet_transaction
+        dynamic_root = Path(self.tmp.name) / "dynamic-runtime-root"
+        (dynamic_root / "state").mkdir(parents=True)
+        output = io.StringIO()
+        with patch.object(packet_pipeline.agentbelt, "ROOT", dynamic_root), \
+             patch.object(packet_pipeline.agentbelt, "packet_ask_pinned_version", return_value="0.12.0"), \
+             patch("sys.stdout", output):
+            status = packet_pipeline.run(
+                ["review", "--files", "safe.py", "--question", "review", "--dry-run"],
+                workspace=self.workspace,
+                runner=self.runner,
+            )
+        self.assertEqual(status, 0)
+        self.assertTrue((dynamic_root / "state" / packet_transaction.LOCK_NAME).is_file())
+
     def test_preview_returns_metadata_without_payload_or_model(self):
         output = io.StringIO()
         with patch.object(packet_pipeline.agentbelt, "packet_ask_pinned_version", return_value="0.12.0"), \
@@ -221,6 +293,7 @@ class PacketPrivacyTests(unittest.TestCase):
         captured = {}
         staged_paths = []
         rendered = io.StringIO()
+        cancel = threading.Event()
 
         def qwen(staging, prompt, **kwargs):
             staging = Path(staging)
@@ -229,6 +302,7 @@ class PacketPrivacyTests(unittest.TestCase):
             captured["packet"] = (staging / "packet.md").read_text()
             self.assertGreaterEqual(kwargs["timeout"], 1)
             self.assertIn("deadline", kwargs)
+            self.assertIs(kwargs["cancel_event"], cancel)
             self.assertNotIn("SYNTHETIC_RAW_SECRET", prompt)
             self.assertIn(packet_pipeline.MODEL_QUESTION, prompt)
             self.assertIn("synthetic-safe-source", prompt)
@@ -247,6 +321,7 @@ class PacketPrivacyTests(unittest.TestCase):
                 runner=self.runner,
                 stdout=rendered,
                 operation_timeout=41,
+                cancel_event=cancel,
             )
         self.assertEqual(status, 0)
         self.assertEqual(rendered.getvalue(), "synthetic qwen review")
@@ -255,7 +330,7 @@ class PacketPrivacyTests(unittest.TestCase):
         self.assertFalse(staged_paths[0].exists(), "Qwen staging must be cleaned after success")
 
     def test_deadline_is_rechecked_after_delayed_credential_setup(self):
-        def delayed_prepare(arguments, use_keychain=False):
+        def delayed_prepare(arguments, use_keychain=False, **kwargs):
             time.sleep(2.1)
             return list(arguments), ["api.z.ai:443"], {"PACKET_ASK_GLM_KEY": "SYNTHETIC_MODEL_KEY"}
 

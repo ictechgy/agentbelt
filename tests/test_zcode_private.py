@@ -12,8 +12,10 @@ import os
 from pathlib import Path
 import plistlib
 import struct
+import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -125,6 +127,94 @@ class ZcodePrivatePureTests(unittest.TestCase):
         self.assertIn(b"zcode-private-backend", patched)
         self.assertNotIn(b'by(g,{iconPath:hH});', patched)
 
+    @staticmethod
+    def _updater_gate_spy(payload, name, marker, invocation, bindings):
+        def function(function_name, function_marker):
+            start = payload.index(("function " + function_name + "(").encode())
+            end = payload.index(("}i(" + function_name + ',"' + function_marker + '")').encode(), start)
+            return payload[start : end + 1].decode("utf-8")
+
+        script = """
+const calls = [];
+const g = {info(){}, warn(){}, error(){}};
+const jt = {isPackaged:true};
+function Ki(){return false;}
+const ve = {
+  checkForUpdates(){ calls.push("check"); return Promise.resolve(); },
+  downloadUpdate(){ calls.push("download"); return Promise.resolve(); }
+};
+const i = (value) => value;
+""" + bindings + "\n" + function("ho", "canUseAutoUpdaterInCurrentRuntime") \
+            + "\n" + function(name, marker) + "\nconst gate = ho();\n" + invocation + "\n" + """
+setTimeout(() => process.stdout.write(JSON.stringify({gate, calls})), 0);
+"""
+        result = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    @unittest.skipUnless(HAS_PUBLIC_SOURCE, "set AGENTBELT_ZCODE_PROOF_ROOT for public extracted bytes")
+    def test_main_patch_existing_gate_blocks_every_updater_entry(self):
+        source = PUBLIC_MAIN_SOURCE.read_bytes()
+        patched = privacy.patch_main_payload(source, Path("/synthetic/root"), "a" * 32)
+        self.assertEqual(patched.count(b"ve.checkForUpdates()"), 5)
+        self.assertEqual(patched.count(b"ve.downloadUpdate(t)"), 1)
+        self.assertIn(b"async function Sw(e={}){if(e.enabled===!1)", patched)
+        cases = (
+            (
+                "Rw", "checkForUpdateMenuClick",
+                'Rw({isDestroyed(){return false;},webContents:{id:7,send(){}}});',
+                """
+const fo = {getFocusedWindow(){return null;}, getAllWindows(){return [];}};
+const k = {UpdateCheckResult:"update"}; const B = {kind:"idle"};
+let Jt = false, zi = null, qi = null;
+function cw(){return "stable";} function de(){} function Zi(){Jt=true; return 1;}
+async function Wx(){} function ji(){} function br(){} function uo(){} function mo(){}
+""",
+                ["check"],
+            ),
+            (
+                "kw", "requestForceAutoUpdate", "kw(() => {});",
+                """
+const B = {kind:"idle"}; let Jt = false, K = null, et = null, ad = null;
+function de(){} function Zi(){Jt=true; return 1;} function ji(){}
+function uo(){} function mo(){} function bt(){return {kind:"idle",enabled:true};}
+""",
+                ["check"],
+            ),
+            (
+                "pd", "refreshAutoUpdaterReleaseChannel", "pd(true);",
+                """
+const B = {kind:"idle"}; let Jt = false, Vi = null, Q = "stable", K = null;
+function cw(){return "stable";} function Zt(){} function de(){}
+function Zi(){Jt=true; return 1;} function ji(){}
+function bt(){return {kind:"idle",enabled:true};}
+""",
+                ["check"],
+            ),
+            (
+                "mo", "downloadAvailableUpdate", 'mo("test");',
+                """
+const B = {kind:"update-available",version:"1",releaseNotes:null,channel:"stable"};
+let tt = null, rt = null, Xt = null, vt = null, xt = null, Q = "stable";
+class j_ {dispose(){}} function on(){} function xx(){return false;} function po(){}
+""",
+                ["download"],
+            ),
+        )
+        for name, marker, invocation, bindings, expected in cases:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    self._updater_gate_spy(source, name, marker, invocation, bindings),
+                    {"gate": True, "calls": expected},
+                )
+                self.assertEqual(
+                    self._updater_gate_spy(patched, name, marker, invocation, bindings),
+                    {"gate": False, "calls": []},
+                )
+
     @unittest.skipUnless(HAS_PUBLIC_SOURCE, "set AGENTBELT_ZCODE_PROOF_ROOT for public extracted bytes")
     def test_scheduler_patch_matches_public_proof_without_mutating_source(self):
         source = PUBLIC_SCHEDULER_SOURCE.read_bytes()
@@ -204,6 +294,43 @@ class ZcodePrivatePureTests(unittest.TestCase):
             (root / "escape").symlink_to(outside)
             with self.assertRaises(privacy.ZcodePrivacyError):
                 privacy.bundle_digest(root)
+
+    def test_source_bundle_allows_root_or_current_owner_but_rejects_foreign_owner(self):
+        with tempfile.TemporaryDirectory(prefix="zcode-owner-test-", dir=Path.home()) as raw:
+            app = Path(raw) / "ZCode.app"
+            app.mkdir(mode=0o700)
+            entry = app / "payload"
+            entry.write_bytes(b"reviewed")
+            original_lstat = Path.lstat
+
+            def inspect_as(root_owner, entry_owner, source=True, digest=False):
+                def synthetic_lstat(path):
+                    info = original_lstat(path)
+                    owner = root_owner if path == app else entry_owner if path == entry else info.st_uid
+                    if path in (app, entry):
+                        return SimpleNamespace(
+                            st_mode=info.st_mode,
+                            st_uid=owner,
+                            st_nlink=info.st_nlink,
+                            st_size=info.st_size,
+                            st_dev=info.st_dev,
+                            st_ino=info.st_ino,
+                        )
+                    return info
+
+                with patch.object(Path, "lstat", synthetic_lstat):
+                    if digest:
+                        return privacy.bundle_digest(app, source=source)
+                    return privacy._validate_bundle_tree(app, source=source)
+
+            self.assertEqual(len(inspect_as(0, os.getuid(), digest=True)), 64)
+            inspect_as(os.getuid(), 0)
+            foreign = next(uid for uid in (1, 2, 12345) if uid not in (0, os.getuid()))
+            with self.assertRaisesRegex(privacy.ZcodePrivacyError, "untrusted owner"):
+                inspect_as(0, foreign)
+            if os.getuid() != 0:
+                with self.assertRaisesRegex(privacy.ZcodePrivacyError, "untrusted owner"):
+                    inspect_as(os.getuid(), 0, source=False)
 
     @unittest.skipUnless(HAS_PUBLIC_SOURCE, "set AGENTBELT_ZCODE_PROOF_ROOT for public extracted bytes")
     def test_generation_must_be_explicitly_32_lowercase_hex(self):

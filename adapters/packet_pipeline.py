@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import agentbelt  # noqa: E402
+from adapters import packet_transaction  # noqa: E402
 
 
 # These are independent bounds.  The envelope includes receipts and framing;
@@ -499,11 +500,16 @@ def _run_confined_call(
     return int(runner(mode, workspace, command, **kwargs))
 
 
-def _remaining_seconds(deadline: float | None) -> int | None:
+def _remaining_seconds(deadline: float | None) -> float | None:
     if deadline is None:
         return None
-    remaining = int(deadline - time.monotonic())
-    return remaining if remaining >= 1 else None
+    remaining = deadline - time.monotonic()
+    return remaining if remaining > 0 else None
+
+
+def _check_cancelled(cancel_event: Any) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise packet_transaction.TransactionCancelled("packet review was cancelled")
 
 
 def _collector(
@@ -514,6 +520,7 @@ def _collector(
     runner: Callable[..., int],
     operation_timeout: int | None = None,
     deadline: float | None = None,
+    cancel_event: Any = None,
 ) -> tuple[int, bytes, bytes]:
     output = tempfile.TemporaryFile(mode="w+b")
     errors = tempfile.TemporaryFile(mode="w+b")
@@ -538,21 +545,21 @@ def _collector(
         if remaining is not None:
             collector_timeout = min(collector_timeout, remaining)
         command = [str(agentbelt.PACKET_PYTHON), "-I", str(ROOT / "packet_entry.py"), *arguments]
+        options = {
+            "domains": [],
+            "extra_env": environment,
+            "ephemeral": True,
+            "read_only_workspace": True,
+            "blocked_workspace_paths": (),
+            "stdout": output,
+            "stderr": errors,
+            "stdin": question_stream,
+            "timeout": collector_timeout,
+        }
+        if cancel_event is not None:
+            options["cancel_event"] = cancel_event
         status = _run_confined_call(
-            runner,
-            "packet-collector",
-            workspace,
-            command,
-            domains=[],
-            extra_env=environment,
-            ephemeral=True,
-            read_only_workspace=True,
-            blocked_workspace_paths=(),
-            stdout=output,
-            stderr=errors,
-            stdin=question_stream,
-            timeout=collector_timeout,
-        )
+            runner, "packet-collector", workspace, command, **options)
         return status, _read_capture(output, MAX_ENVELOPE_BYTES), _read_capture(errors, MAX_DIAGNOSTIC_BYTES)
     finally:
         output.close()
@@ -675,27 +682,36 @@ def _model_glm(
     stdout: Any = None,
     stderr: Any = None,
     deadline: float | None = None,
+    cancel_event: Any = None,
 ) -> int:
     model_args = _model_arguments(tokens)
-    prepared, domains, environment = agentbelt.prepare_packet_request(model_args, use_keychain)
+    _check_cancelled(cancel_event)
+    prepare_options: dict[str, Any] = {}
+    if deadline is not None:
+        prepare_options["deadline"] = deadline
+    if cancel_event is not None:
+        prepare_options["cancel_event"] = cancel_event
+    prepared, domains, environment = agentbelt.prepare_packet_request(
+        model_args, use_keychain, **prepare_options)
+    _check_cancelled(cancel_event)
     process_timeout = _remaining_seconds(deadline)
     if deadline is not None and process_timeout is None:
         raise _error("packet-review deadline expired before model start")
     command = [str(agentbelt.PACKET_PYTHON), "-I", str(ROOT / "packet_entry.py"), *prepared]
+    options = {
+        "domains": domains,
+        "extra_env": environment,
+        "ephemeral": True,
+        "read_only_workspace": True,
+        "blocked_workspace_paths": (),
+        "stdout": stdout,
+        "stderr": stderr,
+        "timeout": process_timeout,
+    }
+    if cancel_event is not None:
+        options["cancel_event"] = cancel_event
     return _run_confined_call(
-        runner,
-        "packet-model",
-        staging,
-        command,
-        domains=domains,
-        extra_env=environment,
-        ephemeral=True,
-        read_only_workspace=True,
-        blocked_workspace_paths=(),
-        stdout=stdout,
-        stderr=stderr,
-        timeout=process_timeout,
-    )
+        runner, "packet-model", staging, command, **options)
 
 
 def _model_qwen(
@@ -705,9 +721,11 @@ def _model_qwen(
     *,
     stdout: Any = None,
     stderr: Any = None,
-    operation_timeout: int | None = None,
+    operation_timeout: float | None = None,
     deadline: float | None = None,
+    cancel_event: Any = None,
 ) -> int:
+    _check_cancelled(cancel_event)
     prompt = MODEL_QUESTION + "\n\nScrubbed packet:\n" + packet
     options: dict[str, Any] = {}
     if stderr is not None:
@@ -722,6 +740,8 @@ def _model_qwen(
         if _remaining_seconds(deadline) is None:
             raise _error("packet-review deadline expired before model start")
         options["deadline"] = deadline
+    if cancel_event is not None:
+        options["cancel_event"] = cancel_event
     capture = tempfile.TemporaryFile(mode="w+b")
     options["stdout"] = capture
     try:
@@ -762,6 +782,9 @@ def run(
     stdout: Any = None,
     stderr: Any = None,
     operation_timeout: int | None = None,
+    deadline: float | None = None,
+    cancel_event: Any = None,
+    transaction_state_file: str | os.PathLike[str] | None = None,
 ) -> int:
     """Run a two-stage packet operation and return the model process status.
 
@@ -771,63 +794,79 @@ def run(
     ``--question-stdin`` request; normal CLI calls inherit their stdin.
     """
     tokens = _as_arguments(arguments)
-    if operation_timeout is not None and (type(operation_timeout) is not int or operation_timeout < 1):
-        raise _error("operation timeout must be a positive integer")
-    started = time.monotonic()
-    deadline = started + operation_timeout if operation_timeout is not None else None
     if "--use-keychain" in tokens:
         tokens = [token for token in tokens if token != "--use-keychain"]
     _validate_shape(tokens, provider)
+    if operation_timeout is not None and (type(operation_timeout) is not int or operation_timeout < 1):
+        raise _error("operation timeout must be a positive integer")
+    if operation_timeout is None:
+        requested_timeout = _option_values(tokens, "--timeout")
+        operation_timeout = int(requested_timeout[-1]) if requested_timeout else None
+    if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int, float))):
+        raise _error("operation deadline must be monotonic time")
+    started = time.monotonic()
+    operation_deadline = started + operation_timeout if operation_timeout is not None else None
+    if deadline is None:
+        deadline = operation_deadline
+    elif operation_deadline is not None:
+        deadline = min(deadline, operation_deadline)
     root = Path(workspace or os.getcwd()).resolve()
     if not root.is_dir() or root.is_symlink():
         raise _error("workspace must be a directory")
     confined = runner or agentbelt.run_confined
     collector_args = _collector_arguments(tokens)
-    status, raw, errors = _collector(
-        collector_args,
-        root,
-        question=question,
-        runner=confined,
-        operation_timeout=operation_timeout,
-        deadline=deadline,
-    )
-    if status != 0:
-        _write_stderr(errors)
-        return status
-    packet, receipt = parse_export(raw)
+    state_file = (Path(transaction_state_file) if transaction_state_file is not None
+                  else Path(agentbelt.ROOT) / "state/packet-ask-version.json")
+    with packet_transaction.consumer(state_file, deadline=deadline, cancel_event=cancel_event):
+        _check_cancelled(cancel_event)
+        status, raw, errors = _collector(
+            collector_args,
+            root,
+            question=question,
+            runner=confined,
+            operation_timeout=operation_timeout,
+            deadline=deadline,
+            cancel_event=cancel_event,
+        )
+        if status != 0:
+            _write_stderr(errors)
+            return status
+        packet, receipt = parse_export(raw)
 
-    # Explicit dry-run remains a collector-only operation.  The packet body is
-    # intentionally returned only because the caller requested dry-run; preview
-    # always emits metadata and never exposes the body.
-    if _has_flag(tokens, "--dry-run"):
-        _write_stderr(errors)
-        sys.stdout.write(_bounded_text(raw))
-        return 0
-    if _has_flag(tokens, "--preview"):
-        _emit_preview(receipt, provider, _has_flag(tokens, "--json"), tokens)
-        _write_stderr(errors)
-        return 0
+        # Explicit dry-run remains a collector-only operation.  The packet body is
+        # intentionally returned only because the caller requested dry-run; preview
+        # always emits metadata and never exposes the body.
+        if _has_flag(tokens, "--dry-run"):
+            _write_stderr(errors)
+            sys.stdout.write(_bounded_text(raw))
+            return 0
+        if _has_flag(tokens, "--preview"):
+            _emit_preview(receipt, provider, _has_flag(tokens, "--json"), tokens)
+            _write_stderr(errors)
+            return 0
 
-    with _staging_workspace(packet) as (_temporary, staging):
-        if provider == "qwen":
-            return _model_qwen(
-                packet,
-                staging,
+        with _staging_workspace(packet) as (_temporary, staging):
+            if provider == "qwen":
+                return _model_qwen(
+                    packet,
+                    staging,
+                    tokens,
+                    stdout=stdout,
+                    stderr=stderr,
+                    operation_timeout=_remaining_seconds(deadline),
+                    deadline=deadline,
+                    cancel_event=cancel_event,
+                )
+            return _model_glm(
                 tokens,
+                staging,
+                use_keychain=use_keychain,
+                runner=confined,
                 stdout=stdout,
                 stderr=stderr,
-                operation_timeout=_remaining_seconds(deadline),
                 deadline=deadline,
+                cancel_event=cancel_event,
             )
-        return _model_glm(
-            tokens,
-            staging,
-            use_keychain=use_keychain,
-            runner=confined,
-            stdout=stdout,
-            stderr=stderr,
-            deadline=deadline,
-        )
 
 
 __all__ = [

@@ -15,7 +15,7 @@ for that one launch. Inside the sandbox the agent sees:
 | Files | The project directory, a per-project isolated `HOME`, and the tool binaries it needs. Your real home, other projects, Keychain and `/opt/homebrew/var` are invisible. Secret-looking files inside the project (`.env`, keys, keystores, SQLite DBs) stay unreadable. |
 | Network | Only an allowlist of provider and package-registry hosts, through a supervisor-owned HTTPS proxy. Telemetry, auto-update and CDN hosts are not on it. |
 | Desktop services | Clipboard, Keychain, Apple Events, LaunchServices and FSEvents are denied by service name. The agent cannot read what you copied and cannot watch file names change outside its project. |
-| Terminal | Only the inherited TTY. Input injection (`TIOCSTI`) is denied. |
+| Terminal | A private PTY and filtered stdout/stderr. Input injection (`TIOCSTI`) is denied. |
 | Credentials | Provider keys are imported once from the agent's own auth store, only for reviewed providers, into a supervisor-owned file linked into each isolated home. A repository-scoped GitHub token can be injected per session. |
 | Self-description | A generated `AGENTBELT_ENVIRONMENT.md` in every session says exactly what is reachable, so the agent does not misdiagnose the sandbox as a broken machine. |
 
@@ -74,6 +74,16 @@ isolated home.
 Open the printed URL in your browser; only the allocated loopback callback port is reachable.
 Use `token-usage login` to renew the console session. Usage and verification helpers do not receive
 repository GitHub credentials.
+
+### Optional screenshot queue
+
+With Google Chrome and `agent-browser` installed, guarded Kimi/OpenCode sessions start
+a renderer for `shots/<name>.html` and return `shots/<name>.png`. Keep styles, fonts,
+and images local to the project; external resources are unavailable. The host file
+server rejects secret paths, links and directory listings. Each watcher uses its own
+browser profile and driver session, with a non-forwarding local proxy and Chrome's
+native sandbox. Queue writes use pinned directory descriptors so a replaced path
+cannot redirect output to host files.
 
 Re-running `install.sh` upgrades the code in place. It never touches `state/` (isolated homes,
 credentials, baselines) and never overwrites an existing `config.json`. `init` only fills in what is

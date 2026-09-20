@@ -1,5 +1,4 @@
 """Regression for the relay where the safecode supervisor runs packet-ask on behalf of the sandbox."""
-from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -152,12 +151,6 @@ class ProviderTests(unittest.TestCase):
             'question': 'review this please',
         }
 
-        @contextmanager
-        def shared_lock(_state):
-            events.append('lock-enter')
-            yield
-            events.append('lock-exit')
-
         def fake_pipeline(*args, **kwargs):
             events.append('pipeline')
             if '--json' in args[0]:
@@ -166,22 +159,93 @@ class ProviderTests(unittest.TestCase):
                 kwargs['stdout'].write('synthetic qwen review'.encode())
             return 0
 
-        with patch.object(packet_relay.packet_transaction, 'consumer', side_effect=shared_lock), \
-             patch.object(packet_pipeline, 'run', side_effect=fake_pipeline) as execute:
+        with patch.object(packet_pipeline, 'run', side_effect=fake_pipeline) as execute:
             status, output, error = packet_relay.host_runner('qwen', prepared, self.workspace)
         self.assertEqual((status, output, error), (0, 'synthetic qwen review', ''))
-        self.assertEqual(events, ['lock-enter', 'pipeline', 'lock-exit'])
+        self.assertEqual(events, ['pipeline'])
         execute.assert_called_once()
         self.assertEqual(execute.call_args.kwargs['provider'], 'qwen')
         self.assertTrue(execute.call_args.kwargs['use_keychain'])
         self.assertEqual(execute.call_args.kwargs['question'], 'review this please')
         self.assertEqual(execute.call_args.kwargs['operation_timeout'], 30)
+        self.assertIsNotNone(execute.call_args.kwargs['deadline'])
+        self.assertEqual(
+            execute.call_args.kwargs['transaction_state_file'],
+            packet_relay.ROOT / 'state/packet-ask-version.json')
 
         prepared_json = dict(prepared, arguments=prepared['arguments'] + ['--json'])
-        with patch.object(packet_relay.packet_transaction, 'consumer', side_effect=shared_lock), \
-             patch.object(packet_pipeline, 'run', side_effect=fake_pipeline):
+        with patch.object(packet_pipeline, 'run', side_effect=fake_pipeline):
             status, output, error = packet_relay.host_runner('qwen', prepared_json, self.workspace)
         self.assertEqual((status, output, error), (0, '{"part":{"type":"text","text":"synthetic qwen review"}}\n', ''))
+
+    def test_review_timeout_includes_wait_for_active_promotion(self):
+        from adapters import packet_pipeline, packet_transaction
+        with tempfile.TemporaryDirectory(prefix='relay-lock-timeout-') as raw:
+            root = Path(raw)
+            (root / 'state').mkdir()
+            state = root / 'state/packet-ask-version.json'
+            state.write_text('{"version":"0.12.0"}\n')
+            entered, release = threading.Event(), threading.Event()
+
+            def hold_promotion():
+                with packet_transaction.promotion(state, '0.13.0'):
+                    entered.set()
+                    release.wait(5)
+
+            holder = threading.Thread(target=hold_promotion)
+            holder.start()
+            self.assertTrue(entered.wait(2))
+            prepared = {
+                'arguments': ['review', '--files', 'a.py', '--question-stdin', '--timeout', '1'],
+                'question': 'review this please',
+            }
+            started = time.monotonic()
+            try:
+                with patch.object(packet_relay, 'ROOT', root), \
+                     patch.object(packet_pipeline, '_collector', side_effect=AssertionError('collector entered')):
+                    status, output, error = packet_relay.host_runner('glm', prepared, root)
+            finally:
+                release.set()
+                holder.join(2)
+            self.assertEqual((status, output), (124, ''))
+            self.assertIn('waiting for packet promotion', error)
+            self.assertLess(time.monotonic() - started, 2)
+
+    def test_cancel_interrupts_wait_for_active_promotion(self):
+        from adapters import packet_pipeline, packet_transaction
+        with tempfile.TemporaryDirectory(prefix='relay-lock-cancel-') as raw:
+            root = Path(raw)
+            (root / 'state').mkdir()
+            state = root / 'state/packet-ask-version.json'
+            state.write_text('{"version":"0.12.0"}\n')
+            entered, release, cancel = threading.Event(), threading.Event(), threading.Event()
+
+            def hold_promotion():
+                with packet_transaction.promotion(state, '0.13.0'):
+                    entered.set()
+                    release.wait(5)
+
+            holder = threading.Thread(target=hold_promotion)
+            holder.start()
+            self.assertTrue(entered.wait(2))
+            prepared = {
+                'arguments': ['review', '--files', 'a.py', '--question-stdin', '--timeout', '30'],
+                'question': 'review this please',
+            }
+            timer = threading.Timer(0.1, cancel.set)
+            timer.start()
+            started = time.monotonic()
+            try:
+                with patch.object(packet_relay, 'ROOT', root), \
+                     patch.object(packet_pipeline, '_collector', side_effect=AssertionError('collector entered')):
+                    status, output, error = packet_relay.host_runner(
+                        'glm', prepared, root, cancel_event=cancel)
+            finally:
+                timer.cancel()
+                release.set()
+                holder.join(2)
+            self.assertEqual((status, output, error), (130, '', 'packet-review was cancelled'))
+            self.assertLess(time.monotonic() - started, 2)
 
     def test_host_runner_rejects_timeout_beyond_relay_lifetime_before_pipeline(self):
         from adapters import packet_pipeline
@@ -206,33 +270,30 @@ class ProviderTests(unittest.TestCase):
         promoted = threading.Event()
         threads = []
         with tempfile.TemporaryDirectory(prefix='relay-transaction-') as raw:
-            state = Path(raw) / 'packet-ask-version.json'
+            root = Path(raw)
+            (root / 'state').mkdir()
+            state = root / 'state/packet-ask-version.json'
             state.write_text('{"version":"0.12.0"}\n')
             state.chmod(0o600)
-            real_consumer = packet_transaction.consumer
-
-            @contextmanager
-            def temporary_consumer(_state):
-                with real_consumer(state):
-                    yield
 
             def fake_pipeline(*args, **kwargs):
-                kwargs['stdout'].write('{"part":{"type":"text","text":"synthetic review"}}\n'.encode())
+                with packet_transaction.consumer(kwargs['transaction_state_file']):
+                    kwargs['stdout'].write('{"part":{"type":"text","text":"synthetic review"}}\n'.encode())
 
-                def promote():
-                    attempted.set()
-                    with packet_transaction.promotion(state, '0.13.0'):
-                        promoted.set()
+                    def promote():
+                        attempted.set()
+                        with packet_transaction.promotion(state, '0.13.0'):
+                            promoted.set()
 
-                worker = threading.Thread(target=promote)
-                threads.append(worker)
-                worker.start()
-                self.assertTrue(attempted.wait(1))
-                time.sleep(0.05)
-                self.assertFalse(promoted.is_set())
+                    worker = threading.Thread(target=promote)
+                    threads.append(worker)
+                    worker.start()
+                    self.assertTrue(attempted.wait(1))
+                    time.sleep(0.05)
+                    self.assertFalse(promoted.is_set())
                 return 0
 
-            with patch.object(packet_relay.packet_transaction, 'consumer', side_effect=temporary_consumer), \
+            with patch.object(packet_relay, 'ROOT', root), \
                  patch.object(packet_pipeline, 'run', side_effect=fake_pipeline):
                 status, output, error = packet_relay.host_runner('qwen', prepared, self.workspace)
             for worker in threads:
@@ -331,6 +392,27 @@ class ChannelTests(unittest.TestCase):
             self.assertIn('exited 125', self.wait_for(requests / 'one.error.txt'))
             (requests / 'two.json').write_text(json.dumps({'files': ['a.py'], 'question': 'b'}))
             self.assertEqual('REVIEW(glm): b', self.wait_for(requests / 'two.result.md'))
+
+    def test_shutdown_cancels_an_active_ordinary_review(self):
+        from adapters import packet_pipeline
+        started = threading.Event()
+
+        def cancellable_pipeline(*args, **kwargs):
+            started.set()
+            self.assertTrue(kwargs['cancel_event'].wait(3), 'shutdown did not cancel review')
+            return 130
+
+        relay = packet_relay.PacketRelay(
+            self.workspace, self.home, settings={'maxPerHour': 3, 'pollSeconds': 0.01})
+        began = time.monotonic()
+        with patch.object(packet_pipeline, 'run', side_effect=cancellable_pipeline):
+            with relay:
+                relay.prepare(self.home, {'PATH': ''})
+                (relay.requests / 'cancel.json').write_text(json.dumps({
+                    'files': ['a.py'], 'question': 'cancel me', 'timeout': 1800}))
+                self.assertTrue(started.wait(2), 'ordinary review did not start')
+        self.assertLess(time.monotonic() - began, 2.5)
+        self.assertFalse(relay.thread.is_alive())
 
     def test_helper_script_works_from_inside_the_real_sandbox(self):
         with self.relay() as relay:

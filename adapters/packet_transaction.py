@@ -16,6 +16,7 @@ from pathlib import Path
 import secrets
 import stat
 import tempfile
+import time
 
 
 CAPABILITY_ENV = 'AGENTBELT_PACKET_GUARD_TRANSACTION'
@@ -24,6 +25,14 @@ CAPABILITY_NAME = '.packet-ask-guard-transaction.json'
 
 
 class TransactionError(Exception):
+    pass
+
+
+class TransactionCancelled(TransactionError):
+    pass
+
+
+class TransactionTimeout(TransactionError):
     pass
 
 
@@ -132,6 +141,32 @@ def _read_capability(state_file, descriptor, supplied_token):
     return record
 
 
+def _acquire_shared(descriptor, deadline=None, cancel_event=None):
+    """Acquire a consumer lock without waiting past cancellation/deadline."""
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise TransactionCancelled('packet transaction wait was cancelled')
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TransactionTimeout('packet transaction wait exceeded its time limit')
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            return
+        except OSError as error:
+            if error.errno == errno.EINTR:
+                continue
+            if error.errno not in (errno.EACCES, errno.EAGAIN):
+                raise TransactionError('could not acquire packet transaction authority: '
+                                       + type(error).__name__) from None
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TransactionTimeout('packet transaction wait exceeded its time limit')
+        delay = min(0.05, remaining) if remaining is not None else 0.05
+        if cancel_event is None:
+            time.sleep(delay)
+        else:
+            cancel_event.wait(delay)
+
+
 @contextmanager
 def promotion(state_file, candidate):
     """Hold exclusive authority and expose a candidate-only guard-test token."""
@@ -163,14 +198,16 @@ def promotion(state_file, candidate):
 
 
 @contextmanager
-def consumer(state_file, environment=None):
+def consumer(state_file, environment=None, *, deadline=None, cancel_event=None):
     """Hold shared authority for one complete packet-ask host operation."""
     descriptor = _open_lock(state_file)
     stream = os.fdopen(descriptor, 'a+b')
     supplied = (os.environ if environment is None else environment).get(CAPABILITY_ENV, '')
     try:
         if _read_capability(state_file, descriptor, supplied) is None:
-            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            _acquire_shared(descriptor, deadline=deadline, cancel_event=cancel_event)
+        elif cancel_event is not None and cancel_event.is_set():
+            raise TransactionCancelled('packet transaction wait was cancelled')
         yield
     finally:
         stream.close()

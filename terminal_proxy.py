@@ -17,6 +17,9 @@ class TerminalError(RuntimeError):
     pass
 
 
+CANCELLED_STATUS = 130
+
+
 class TerminalFilter:
     """Preserve text/CSI and reviewed OSCs; discard clipboard and passthrough strings.
 
@@ -217,12 +220,14 @@ def _signals(process, resize=None, cancelled=None):
     return previous
 
 
-def run(command, *, timeout=None, **options):
+def run(command, *, timeout=None, cancel_event=None, **options):
     """Relay all externally delivered text output, including pipes and files.
 
     Every terminal fd is replaced with a private PTY. Other output channels use
     separate pipes so a downstream `cat` cannot bypass the terminal filter.
     """
+    if cancel_event is not None and cancel_event.is_set():
+        return CANCELLED_STATUS
     import stat
     from pathlib import Path
     descriptors = [_descriptor(options.get(name), fd, options.get('stdout'))
@@ -307,6 +312,9 @@ def run(command, *, timeout=None, **options):
         deadline = None if timeout is None else time.monotonic() + timeout
         exited_at = None
         while process.returncode is None or any(item['open'] or item['pending'] for item in sources):
+            if cancel_event is not None and cancel_event.is_set():
+                _stop(process, lambda: _drain_output(sources))
+                return CANCELLED_STATUS
             if cancelled:
                 _stop(process, lambda: _drain_output(sources))
                 return 128 + cancelled['signal']
@@ -329,11 +337,6 @@ def run(command, *, timeout=None, **options):
                     process.returncode = os.waitstatus_to_exitcode(status)
             if process.returncode is not None:
                 exited_at = exited_at or now
-                if now - exited_at >= .25:
-                    for item in sources:
-                        if item['open']:
-                            item['pending'].extend(item['filter'].feed(b'', final=True))
-                            item['open'] = False
             master_open = master is not None and any(item['fd'] == master and item['open'] for item in sources)
             readers = [item['fd'] for item in sources if item['open'] and len(item['pending']) < 65536]
             if input_open and master_open and len(incoming) < 65536:
@@ -357,6 +360,17 @@ def run(command, *, timeout=None, **options):
                 else:
                     input_open = False
             _pump_output(sources, ready, writable)
+            if exited_at is not None and time.monotonic() - exited_at >= .25:
+                for item in sources:
+                    # A full pending buffer means destination backpressure kept
+                    # us from reading the child's pipe. Preserve those bytes and
+                    # resume reading as the destination drains. Once capacity is
+                    # available, a source that stays unreadable belongs only to
+                    # an orphan descendant and may be closed after the grace.
+                    if (item['open'] and item['fd'] in readers and item['fd'] not in ready
+                            and len(item['pending']) < 65536):
+                        item['pending'].extend(item['filter'].feed(b'', final=True))
+                        item['open'] = False
             if master in writable and incoming:
                 try:
                     count = os.write(master, incoming[:16384])

@@ -1,40 +1,35 @@
 #!/usr/bin/env python3
-"""Host-side screenshot queue for sandboxed agents (safekimi/safecode/zcode backend).
+"""Host-side screenshot queue for sandboxed agents.
 
-Why this exists. The confined child cannot run a browser: Chrome needs font/GPU
-mach services the Seatbelt profile denies, and widening the profile to admit a
-browser would expose the isolated home (including provider credentials) to the
-renderer.  Instead the child writes HTML into <workspace>/shots/ and this
-host-side watcher renders it and writes <name>.png back where the child can
-read it -- the same artifact-exchange shape as the packet relay.
+The child writes HTML under ``<workspace>/shots`` and this host process returns
+a PNG beside it.  Two boundaries matter here:
 
-Egress rules, enforced on the host so the render channel cannot widen the
-child's boundary:
+* the HTTP server opens every source through held, no-follow directory
+  descriptors and refuses project secret names, protected git configuration,
+  links, special files, and directory listings;
+* the private Chrome keeps its native process sandbox and sends all browser
+  traffic to this same server as a non-forwarding proxy.  Foreign targets,
+  tunnels, and upgrades are rejected.  The profile, agent-browser HOME,
+  config, and session are unique to this watcher.
 
-- Pages are served to the browser over http://<SHOT_HOST>:<port>/... only.
-  The local server answers GET/HEAD for paths that resolve inside the
-  workspace and refuses symlink escapes, so the browser can never read files
-  outside the workspace.
-- Chrome itself is launched with --host-resolver-rules mapping every name to
-  NOTFOUND except the internal shot host.  http(s) subresources die at DNS,
-  and because the page origin is http (not file://), Chrome also refuses
-  file:// subresources (credentials, /etc, home files) on its own.
-- The render browser uses a fresh throwaway profile; nothing from the user's
-  real browsing (cookies, cache) can leak into a shot.
+Usage: ``shot_watcher.py <workspace>``
 
-Usage: shot_watcher.py <workspace>   (leave running while the session works)
-
-Protocol for the child:
+Queue protocol:
   write  shots/<name>.html            -> get shots/<name>.png
   write  shots/<name>.json (optional) -> {"width":1440,"height":900,"full":true,"delayMs":300}
   read   shots/<name>.err.txt         -> present only when the render failed
 """
+
+import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -44,17 +39,25 @@ import urllib.parse
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-# Internal host name that Chrome's resolver rules map to 127.0.0.1.  Every
-# other name -- including "localhost" and IP literals -- resolves to NOTFOUND,
-# so a page can only ever reach the confined file server.
-SHOT_HOST = 'agentbelt-shots.internal'
+# The launcher intentionally uses ``python -I``.  Isolated mode removes the
+# script directory from sys.path, so restore only this trusted sibling path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shot_queue  # noqa: E402
+
+
+SHOT_HOST = '127.0.0.1'
 CHROME_DEFAULT = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 POLL_SECONDS = 0.6
 RENDER_TIMEOUT = 45.0
 VALID_EXTENSIONS = {'.html', '.htm'}
-# 세션이 끝난 뒤 워처가 영원히 상주하지 않도록, 큐에 활동이 없으면 스스로 종료한다.
 IDLE_LIMIT_SECONDS = 6 * 3600
 _INTERNAL_NAMES = {'.watcher.lock', '.watcher.log', 'README.md'}
+_SECRET_PATTERNS = (
+    '.env*', '.ENV*', '*.env', '*.env.*', '*.pem', '*.key', '*.p12', '*.pfx', '*.keystore',
+    'id_rsa*', 'id_ed25519*', 'auth.json', 'credentials', 'credentials.*',
+    'secrets', 'secrets.*', '.ssh', '.aws', '.azure', '.kube', '.gnupg',
+    '.npmrc', '.netrc', '.pypirc', '*.sqlite', '*.sqlite3', '*.db', '*.dump',
+)
 
 README = """# Screenshot queue
 
@@ -68,70 +71,232 @@ Optional `shots/<name>.json` adjusts the render:
 {"width": 1440, "height": 900, "full": true, "delayMs": 300}
 ```
 
-Rules: only files inside this workspace can be rendered, and the browser
-cannot reach the network or local files -- external `http(s)` images,
-`file://` references, and link previews all fail by design.
+Rules: ordinary HTML, CSS, images, and fonts in this workspace are available.
+Project secret names and protected git configuration are not. The renderer
+cannot reach other local ports, the LAN, or the external network.
 """
 
 
 def free_port():
     listener = socket.socket()
-    listener.bind(('127.0.0.1', 0))
-    port = listener.getsockname()[1]
-    listener.close()
-    return port
+    try:
+        listener.bind(('127.0.0.1', 0))
+        return listener.getsockname()[1]
+    finally:
+        listener.close()
+
+
+def _forbidden_source(parts):
+    for name in parts:
+        folded = name.casefold()
+        if any(fnmatch.fnmatchcase(folded, pattern.casefold()) for pattern in _SECRET_PATTERNS):
+            return True
+    for index, name in enumerate(parts[:-1]):
+        if name.casefold() != '.git':
+            continue
+        tail = [part.casefold() for part in parts[index + 1:]]
+        if tail[0] in ('config', 'config.worktree', 'hooks'):
+            return True
+        if tail[:2] == ['info', 'attributes']:
+            return True
+    return False
+
+
+def _request_parts(path):
+    raw = urllib.parse.urlsplit(path).path
+    try:
+        decoded = urllib.parse.unquote(raw, errors='strict')
+    except UnicodeError:
+        raise OSError('invalid URL encoding') from None
+    if '\x00' in decoded:
+        raise OSError('NUL in URL path')
+    parts = [part for part in decoded.split('/') if part not in ('', '.')]
+    if not parts or any(part == '..' for part in parts) or _forbidden_source(parts):
+        raise OSError('forbidden source path')
+    return parts
+
+
+def open_workspace_request(workspace_fd, path):
+    """Open the requested regular single-link file beneath a pinned workspace."""
+    parts = _request_parts(path)
+    descriptor = os.dup(workspace_fd)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        result = os.open(
+            parts[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=descriptor,
+        )
+        try:
+            info = os.fstat(result)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise OSError('source must be a regular single-link file')
+            return result, info, parts[-1]
+        except BaseException:
+            os.close(result)
+            raise
+    finally:
+        os.close(descriptor)
 
 
 class WorkspaceHandler(SimpleHTTPRequestHandler):
-    """GET/HEAD-only server confined to the workspace tree; symlinks may not escape it."""
+    """GET/HEAD-only descriptor-relative workspace server with no listings."""
 
-    workspace = None  # Path, set before serve()
+    def send_head(self):
+        expected_host = SHOT_HOST + ':' + str(self.server.server_address[1])
+        if self.headers.get('Host') != expected_host:
+            self.send_error(404, 'File not found')
+            return None
+        target = urllib.parse.urlsplit(self.path)
+        if target.scheme or target.netloc:
+            if target.scheme != 'http' or target.netloc != expected_host:
+                self.send_error(404, 'File not found')
+                return None
+        if self.headers.get('Upgrade') or 'upgrade' in self.headers.get('Connection', '').casefold():
+            self.send_error(403, 'Protocol upgrade denied')
+            return None
+        try:
+            descriptor, info, name = open_workspace_request(self.server.workspace_fd, self.path)
+        except (OSError, ValueError):
+            self.send_error(404, 'File not found')
+            return None
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', self.guess_type(name))
+            self.send_header('Content-Length', str(info.st_size))
+            self.send_header('Last-Modified', self.date_time_string(info.st_mtime))
+            self.end_headers()
+            return os.fdopen(descriptor, 'rb')
+        except BaseException:
+            os.close(descriptor)
+            raise
 
-    def translate_path(self, path):
-        # Resolve the URL path against the workspace and refuse escapes --
-        # SimpleHTTPRequestHandler would happily follow a symlink out of the tree.
-        raw = urllib.parse.urlsplit(path).path
-        relative = urllib.parse.unquote(raw).lstrip('/')
-        candidate = (self.workspace / relative).resolve()
-        if candidate != self.workspace and self.workspace not in candidate.parents:
-            return str(self.workspace / '__forbidden__')
-        return str(candidate)
+    def list_directory(self, _path):
+        self.send_error(404, 'File not found')
+        return None
 
-    def log_message(self, fmt, *args):
+    def do_CONNECT(self):
+        try:
+            self.send_response(403, 'Proxy tunnels are denied')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def end_headers(self):
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header(
+            'Content-Security-Policy',
+            "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; "
+            "connect-src 'none'; form-action 'none'; worker-src 'none'; "
+            "script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self' data:; media-src 'self' data:",
+        )
+        self.send_header(
+            'Permissions-Policy',
+            'camera=(), microphone=(), geolocation=(), display-capture=(), '
+            'clipboard-read=(), clipboard-write=(), usb=(), serial=(), payment=(), '
+            'local-network-access=()',
+        )
+        super().end_headers()
+
+    def log_message(self, _fmt, *_args):
         pass
+
+
+class WorkspaceHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, workspace_fd):
+        self.workspace_fd = os.dup(workspace_fd)
+        try:
+            super().__init__(address, WorkspaceHandler)
+        except BaseException:
+            os.close(self.workspace_fd)
+            raise
+
+    def server_close(self):
+        try:
+            super().server_close()
+        finally:
+            if self.workspace_fd is not None:
+                os.close(self.workspace_fd)
+                self.workspace_fd = None
 
 
 class ShotWatcher:
     def __init__(self, workspace):
-        self.workspace = workspace.resolve()
+        self.workspace = Path(workspace).resolve(strict=True)
         if not self.workspace.is_dir():
             raise SystemExit('workspace is not a directory: ' + str(workspace))
-        self.queue = self.workspace / 'shots'
-        self.queue.mkdir(exist_ok=True)
-        self.lock_path = self.queue / '.watcher.lock'
-        try:
-            descriptor = os.open(str(self.lock_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            os.write(descriptor, str(os.getpid()).encode())
-            os.close(descriptor)
-        except FileExistsError:
-            raise SystemExit('a shot watcher is already running for ' + str(self.workspace))
-        self.tmpdir = Path(tempfile.mkdtemp(prefix='shot-watcher-'))
+        self.workspace_fd = None
+        self.queue_fd = None
+        self.tmpdir = None
         self.chrome = None
-        self.browser = None
         self.server = None
+        self.server_thread = None
         self.server_port = None
-        self.chrome_bin = os.environ.get('SHOT_WATCHER_CHROME', CHROME_DEFAULT)
-        self.agent_browser = shutil.which('agent-browser')
+        self.debug_port = None
+        self.browser_connected = False
         self.stopping = False
+        self.lock_acquired = False
+        try:
+            self.workspace_fd = shot_queue.open_directory(self.workspace)
+            self.queue_fd = shot_queue.open_child_directory(self.workspace_fd, 'shots', create=True)
+            if not shot_queue.acquire_lock(self.queue_fd, os.getpid()):
+                raise SystemExit('a shot watcher is already running for ' + str(self.workspace))
+            self.lock_acquired = True
+            temporary_parent = '/private/tmp' if Path('/private/tmp').is_dir() else None
+            self.tmpdir = Path(tempfile.mkdtemp(prefix='shot-watcher-', dir=temporary_parent))
+            self.driver_home = self.tmpdir / 'driver-home'
+            self.driver_home.mkdir(mode=0o700)
+            self.driver_socket_dir = self.tmpdir / 's'
+            self.driver_socket_dir.mkdir(mode=0o700)
+            self.driver_config = self.tmpdir / 'agent-browser.json'
+            self.driver_config.write_text('{}\n')
+            self.browser_guard = self.tmpdir / 'browser-guard.js'
+            self.browser_guard.write_text(
+                "for (const name of ['RTCPeerConnection','webkitRTCPeerConnection']) {"
+                "Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false});}"
+            )
+            self.session = 'shot-' + secrets.token_hex(8)
+            self.chrome_bin = os.environ.get('SHOT_WATCHER_CHROME', CHROME_DEFAULT)
+            self.agent_browser = shutil.which('agent-browser')
+            self.driver_env = {key: value for key, value in os.environ.items()
+                               if not key.startswith('AGENT_BROWSER_')}
+            self.driver_env.update({
+                'HOME': str(self.driver_home),
+                'XDG_CONFIG_HOME': str(self.driver_home / '.config'),
+                'XDG_CACHE_HOME': str(self.driver_home / '.cache'),
+                'XDG_STATE_HOME': str(self.driver_home / '.state'),
+                'TMPDIR': str(self.tmpdir),
+                'AGENT_BROWSER_IDLE_TIMEOUT_MS': '5000',
+                'AGENT_BROWSER_SOCKET_DIR': str(self.driver_socket_dir),
+            })
+        except BaseException:
+            if (self.lock_acquired and self.queue_fd is not None
+                    and shot_queue.read_lock_pid(self.queue_fd) == os.getpid()):
+                shot_queue.unlink_name(self.queue_fd, '.watcher.lock')
+            if self.queue_fd is not None:
+                os.close(self.queue_fd)
+            if self.workspace_fd is not None:
+                os.close(self.workspace_fd)
+            if self.tmpdir is not None:
+                shutil.rmtree(self.tmpdir, ignore_errors=True)
+            raise
 
     def log(self, message):
         print('[shot-watcher] ' + message, flush=True)
 
     def start_server(self):
-        WorkspaceHandler.workspace = self.workspace
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), WorkspaceHandler)
+        self.server = WorkspaceHTTPServer(('127.0.0.1', 0), self.workspace_fd)
         self.server_port = self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
         self.log('file server on 127.0.0.1:' + str(self.server_port) + ' for ' + str(self.workspace))
 
     def start_browser(self):
@@ -139,49 +304,95 @@ class ShotWatcher:
             raise SystemExit('agent-browser CLI not found in PATH')
         if not Path(self.chrome_bin).is_file():
             raise SystemExit('chrome not found at ' + self.chrome_bin)
-        debug_port = free_port()
-        self.debug_port = debug_port
-        profile = self.tmpdir / 'chrome-profile'
+        if self.server_port is None:
+            raise SystemExit('screenshot file server is not running')
+        self.debug_port = free_port()
+        chrome_profile = self.tmpdir / 'chrome-profile'
+        command = [
+            self.chrome_bin,
+            '--headless=new', '--disable-gpu', '--disable-background-networking',
+            '--disable-component-update', '--disable-sync', '--no-first-run',
+            '--no-default-browser-check', '--use-mock-keychain', '--password-store=basic',
+            '--user-data-dir=' + str(chrome_profile),
+            '--remote-debugging-address=127.0.0.1',
+            '--remote-debugging-port=' + str(self.debug_port),
+            '--proxy-server=http://127.0.0.1:' + str(self.server_port),
+            '--proxy-bypass-list=<-loopback>',
+            '--disable-quic',
+            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+            '--host-resolver-rules=EXCLUDE 127.0.0.1, MAP * ~NOTFOUND',
+            'about:blank',
+        ]
         self.chrome = subprocess.Popen(
-            [self.chrome_bin, '--headless=new', '--disable-gpu', '--no-first-run',
-             '--no-default-browser-check', '--user-data-dir=' + str(profile),
-             '--remote-debugging-port=' + str(debug_port),
-             '--host-resolver-rules=MAP ' + SHOT_HOST + ' 127.0.0.1, MAP * ~NOTFOUND',
-             'about:blank'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            command,
+            cwd=self.tmpdir,
+            env=self.driver_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         deadline = time.time() + 15
         while time.time() < deadline:
             try:
-                with urllib.request.urlopen('http://127.0.0.1:' + str(debug_port) + '/json/version', timeout=1) as r:
-                    if r.status == 200:
+                with urllib.request.urlopen(
+                    'http://127.0.0.1:' + str(self.debug_port) + '/json/version', timeout=1
+                ) as response:
+                    if response.status == 200:
                         break
             except Exception:
+                if self.chrome.poll() is not None:
+                    raise SystemExit('sandboxed chrome exited before its debug port came up')
                 time.sleep(0.25)
         else:
             raise SystemExit('chrome debug port did not come up')
-        self.run_ab('connect', str(debug_port), timeout=15)
-        self.log('headless chrome attached (debug port ' + str(debug_port) + ', resolver: ' + SHOT_HOST + ' only)')
+        try:
+            self.connect_browser()
+        except RuntimeError as error:
+            raise SystemExit(str(error)) from None
+        self.log('sandboxed headless chrome attached (private session ' + self.session + ')')
 
-    def run_ab(self, *args, timeout=RENDER_TIMEOUT):
-        result = subprocess.run([self.agent_browser, *args], capture_output=True, text=True, timeout=timeout)
-        return result
+    def run_ab(self, *args, timeout=RENDER_TIMEOUT, initialize=False):
+        if self.agent_browser is None:
+            raise RuntimeError('agent-browser CLI not found')
+        command = [
+            self.agent_browser,
+            '--session', self.session,
+            '--config', str(self.driver_config),
+            *(['--init-script', str(self.browser_guard)] if initialize else []),
+            '--cdp', str(self.debug_port),
+            *args,
+        ]
+        return subprocess.run(
+            command,
+            cwd=self.tmpdir,
+            env=self.driver_env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
 
-    def page_url(self, relative):
+    def connect_browser(self):
+        """Attach this named driver and reinstall the guard after daemon restarts."""
+        result = self.run_ab('connect', str(self.debug_port), timeout=15, initialize=True)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()[:300]
+            raise RuntimeError('agent-browser could not connect to private chrome'
+                               + (': ' + detail if detail else ''))
+        self.browser_connected = True
+
+    def page_url(self, html_name):
+        relative = 'shots/' + html_name
         return 'http://' + SHOT_HOST + ':' + str(self.server_port) + '/' + urllib.parse.quote(relative)
 
     def view_options(self, stem):
-        view = self.queue / (stem + '.json')
-        if not view.is_file():
-            return {}
         try:
-            data = json.loads(view.read_text())
+            raw = shot_queue.read_bytes(self.queue_fd, stem + '.json', shot_queue.MAX_OPTIONS_BYTES)
+            data = json.loads(raw.decode('utf-8'))
             return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
+        except (OSError, UnicodeError, ValueError):
             return {}
 
-    def render(self, html_path):
-        stem = html_path.stem
-        relative = html_path.relative_to(self.workspace).as_posix()
+    def render(self, html_name):
+        stem = Path(html_name).stem
         options = self.view_options(stem)
         width = options.get('width') if isinstance(options.get('width'), int) else 1280
         height = options.get('height') if isinstance(options.get('height'), int) else 800
@@ -190,80 +401,77 @@ class ShotWatcher:
         delay_ms = options.get('delayMs') if isinstance(options.get('delayMs'), int) else 350
         delay_ms = max(0, min(delay_ms, 10000))
         full = options.get('full', True) is not False
-        tmp_png = self.tmpdir / (stem + '.png')
+        temporary_name = hashlib.sha256(html_name.encode('utf-8', 'surrogatepass')).hexdigest() + '.png'
+        tmp_png = self.tmpdir / temporary_name
+        try:
+            tmp_png.unlink()
+        except FileNotFoundError:
+            pass
         steps = [
             ('set', 'viewport', str(width), str(height)),
-            ('open', self.page_url(relative)),
+            ('open', self.page_url(html_name)),
             ('wait', str(delay_ms)),
         ]
         shot_args = ['screenshot'] + (['--full'] if full else []) + [str(tmp_png)]
         try:
+            self.connect_browser()
             for step in steps:
                 result = self.run_ab(*step)
                 if result.returncode != 0:
-                    raise RuntimeError((result.stderr or result.stdout).strip()[:300])
+                    raise RuntimeError((result.stderr or result.stdout).strip()[:300] or 'browser command failed')
             result = self.run_ab(*shot_args)
-            if result.returncode != 0 or not tmp_png.is_file() or tmp_png.stat().st_size == 0:
-                raise RuntimeError((result.stderr or result.stdout).strip()[:300] or 'empty screenshot')
-            os.replace(tmp_png, self.queue / (stem + '.png'))
-            err = self.queue / (stem + '.err.txt')
-            if err.exists():
-                err.unlink()
-            self.log('rendered ' + relative + ' -> shots/' + stem + '.png')
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout).strip()[:300] or 'screenshot failed')
+            info = tmp_png.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size == 0:
+                raise RuntimeError('empty or unsafe screenshot output')
+            shot_queue.publish_file(self.queue_fd, stem + '.png', tmp_png)
+            shot_queue.unlink_name(self.queue_fd, stem + '.err.txt')
+            self.log('rendered shots/' + html_name + ' -> shots/' + stem + '.png')
         except Exception as error:
-            (self.queue / (stem + '.err.txt')).write_text('render failed: ' + str(error) + '\n')
-            self.log('FAILED ' + relative + ': ' + str(error)[:200])
-
-    def stale_pngs(self):
-        for png in self.queue.glob('*.png'):
-            if not (self.queue / (png.stem + '.html')).exists() and not (self.queue / (png.stem + '.htm')).exists():
-                png.unlink()
+            message = ('render failed: ' + str(error)[:300] + '\n').encode('utf-8', 'replace')
+            try:
+                shot_queue.atomic_write(self.queue_fd, stem + '.err.txt', message)
+            except OSError as write_error:
+                self.log('FAILED to record shots/' + stem + '.err.txt: ' + str(write_error)[:160])
+            self.log('FAILED shots/' + html_name + ': ' + str(error)[:200])
 
     def poll_once(self):
-        self.stale_pngs()
-        for html_path in sorted(self.queue.iterdir()):
-            if html_path.suffix.lower() not in VALID_EXTENSIONS or not html_path.is_file():
+        try:
+            names = sorted(os.listdir(self.queue_fd))
+        except OSError:
+            return
+        for html_name in names:
+            if Path(html_name).suffix.lower() not in VALID_EXTENSIONS:
                 continue
-            stem = html_path.stem
-            png = self.queue / (stem + '.png')
-            view = self.queue / (stem + '.json')
-            # 요청 파일이 workspace를 벗어나면 렌더 자체를 거부한다 (서버의
-            # translate_path 차단과 별개의 사전 방어선).
-            resolved = html_path.resolve()
-            if resolved != self.workspace and self.workspace not in resolved.parents:
-                err = self.queue / (stem + '.err.txt')
-                if not err.exists():
-                    err.write_text('render refused: file resolves outside the workspace\n')
-                if png.exists():
-                    png.unlink()
+            html_info = shot_queue.regular_stat(self.queue_fd, html_name)
+            if html_info is None:
                 continue
-            try:
-                html_mtime = html_path.stat().st_mtime
-            except OSError:
-                continue
-            needs = (not png.exists()
-                     or png.stat().st_mtime < html_mtime
-                     or (view.exists() and png.stat().st_mtime < view.stat().st_mtime))
+            stem = Path(html_name).stem
+            png_info = shot_queue.regular_stat(self.queue_fd, stem + '.png', shot_queue.MAX_PNG_BYTES)
+            view_info = shot_queue.regular_stat(self.queue_fd, stem + '.json', shot_queue.MAX_OPTIONS_BYTES)
+            needs = (png_info is None
+                     or png_info.st_mtime_ns < html_info.st_mtime_ns
+                     or (view_info is not None and png_info.st_mtime_ns < view_info.st_mtime_ns))
             if needs:
-                self.render(html_path)
+                self.render(html_name)
 
     def run(self):
-        readme = self.queue / 'README.md'
-        if not readme.exists():
-            readme.write_text(README)
+        if shot_queue.regular_stat(self.queue_fd, 'README.md', len(README.encode()) * 2) is None:
+            shot_queue.atomic_write(self.queue_fd, 'README.md', README, maximum=len(README.encode()) * 2)
         self.start_server()
         self.start_browser()
-        self.log('watching ' + str(self.queue) + ' -- drop <name>.html to get <name>.png')
+        self.log('watching ' + str(self.workspace / 'shots') + ' -- drop <name>.html to get <name>.png')
         last_activity = time.time()
         while not self.stopping:
             try:
                 self.poll_once()
-                for entry in self.queue.iterdir():
-                    if entry.name not in _INTERNAL_NAMES:
-                        try:
-                            last_activity = max(last_activity, entry.stat().st_mtime)
-                        except OSError:
-                            pass
+                for name in os.listdir(self.queue_fd):
+                    if name in _INTERNAL_NAMES:
+                        continue
+                    info = shot_queue.regular_stat(self.queue_fd, name)
+                    if info is not None:
+                        last_activity = max(last_activity, info.st_mtime)
                 if time.time() - last_activity > IDLE_LIMIT_SECONDS:
                     self.log('idle limit reached -- exiting')
                     break
@@ -275,21 +483,36 @@ class ShotWatcher:
         self.stopping = True
 
     def cleanup(self):
-        try:
-            self.run_ab('close', timeout=5)
-        except Exception:
-            pass
+        if self.browser_connected and self.chrome is not None and self.chrome.poll() is None:
+            try:
+                self.run_ab('close', timeout=5)
+            except Exception:
+                pass
+        self.browser_connected = False
         if self.chrome is not None:
             self.chrome.terminate()
             try:
                 self.chrome.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.chrome.kill()
+                self.chrome.wait(timeout=5)
+            self.chrome = None
         if self.server is not None:
             self.server.shutdown()
-        if self.lock_path.exists():
-            self.lock_path.unlink()
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
+            self.server.server_close()
+            self.server = None
+        if self.queue_fd is not None:
+            if self.lock_acquired and shot_queue.read_lock_pid(self.queue_fd) == os.getpid():
+                shot_queue.unlink_name(self.queue_fd, '.watcher.lock')
+            self.lock_acquired = False
+            os.close(self.queue_fd)
+            self.queue_fd = None
+        if self.workspace_fd is not None:
+            os.close(self.workspace_fd)
+            self.workspace_fd = None
+        if self.tmpdir is not None:
+            shutil.rmtree(self.tmpdir, ignore_errors=True)
+            self.tmpdir = None
 
 
 def main():

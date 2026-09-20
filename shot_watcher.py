@@ -72,7 +72,7 @@ Optional `shots/<name>.json` adjusts the render:
 ```
 
 Rules: ordinary HTML, CSS, images, and fonts in this workspace are available.
-Project secret names and protected git configuration are not. The renderer
+Project secrets, agent configuration and protected git configuration are not. The renderer
 cannot reach other local ports, the LAN, or the external network.
 """
 
@@ -87,6 +87,12 @@ def free_port():
 
 
 def _forbidden_source(parts):
+    # A detached watcher may outlive the Kimi/OpenCode session that created it.
+    # Apply the stricter Zcode/AutoClaw root exclusions for every renderer.
+    folded_parts = [part.casefold() for part in parts]
+    if (folded_parts and folded_parts[0] in ('.zcode', 'zcode.json')) \
+            or folded_parts[:2] == ['.agents', 'mcp.json']:
+        return True
     for name in parts:
         folded = name.casefold()
         if any(fnmatch.fnmatchcase(folded, pattern.casefold()) for pattern in _SECRET_PATTERNS):

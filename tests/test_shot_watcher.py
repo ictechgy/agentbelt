@@ -182,6 +182,18 @@ class HTTPServerTests(unittest.TestCase):
             self.assertEqual(status, 404)
             self.assertNotIn(b'SYNTHETIC_', body)
 
+    def test_surviving_watcher_denies_every_backend_configuration_root(self):
+        self.assertTrue(set(agentbelt.SECRET_NAMES).issubset(shot_watcher._SECRET_PATTERNS))
+        for relative in agentbelt.ZCODE_WORKSPACE_CONFIG_PATHS:
+            self.assertTrue(shot_watcher._forbidden_source(relative.split('/')), relative)
+        for relative in ('.zcode/config.json', 'zcode.json', '.agents/mcp.json'):
+            target = self.workspace / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('SYNTHETIC_BACKEND_CONFIG_MARKER')
+            status, body = self.get('/' + relative)
+            self.assertEqual(status, 404, relative)
+            self.assertNotIn(b'SYNTHETIC_BACKEND_CONFIG_MARKER', body)
+
     def test_actual_get_preserves_html_css_images_and_fonts(self):
         fixtures = {
             'shots/page.html': b'<link rel="stylesheet" href="/assets/site.css">',
@@ -573,6 +585,16 @@ class LiveBrowserEgressTests(unittest.TestCase):
                 self.assertEqual(hits, [])
                 with self.assertRaises(socket.timeout):
                     udp.recvfrom(2048)
+                for number, relative in enumerate(('.zcode/config.json', 'zcode.json', '.agents/mcp.json')):
+                    target = workspace / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text('SYNTHETIC_BACKEND_CONFIG_MARKER')
+                    name = 'blocked-config-' + str(number) + '.html'
+                    (queue / name).write_text('<script>location.href=' + json.dumps('/' + relative) + '</script>')
+                    watcher.render(name)
+                    page = watcher.run_ab('eval', 'document.body.textContent', timeout=15)
+                    self.assertEqual(page.returncode, 0, page.stderr)
+                    self.assertNotIn('SYNTHETIC_BACKEND_CONFIG_MARKER', page.stdout)
             finally:
                 watcher.cleanup()
                 blocked_server.shutdown()

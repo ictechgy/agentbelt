@@ -80,7 +80,7 @@ repository GitHub credentials.
 With Google Chrome and `agent-browser` installed, guarded Kimi/OpenCode sessions start
 a renderer for `shots/<name>.html` and return `shots/<name>.png`. Keep styles, fonts,
 and images local to the project; external resources are unavailable. The host file
-server rejects secret paths, links and directory listings. Each watcher uses its own
+server rejects secret and agent-configuration paths, links and directory listings. Each watcher uses its own
 browser profile and driver session, with a non-forwarding local proxy and Chrome's
 native sandbox. Queue writes use pinned directory descriptors so a replaced path
 cannot redirect output to host files.

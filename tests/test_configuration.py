@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 import os
@@ -144,18 +145,14 @@ class ConfigurationTests(unittest.TestCase):
                 guard.launch_zcode_app()
             execute.assert_not_called()
 
-    def test_safe_app_does_not_inherit_unrelated_environment_secrets(self):
+    def test_safe_app_cannot_start_even_with_valid_backend_and_no_running_gui(self):
         with patch.object(guard, 'runtime_status'), patch.object(guard, 'verify_zcode_binary'), \
              patch.dict(os.environ, {'AWS_SECRET_ACCESS_KEY': 'SYNTHETIC_ONLY'}), \
              patch.object(guard.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='synthetic-start')), \
              patch.object(guard.os, 'execve', side_effect=RuntimeError('synthetic exec boundary')) as execute:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaisesRegex(guard.GuardError, 'GUI.*upload'):
                 guard.launch_zcode_app()
-            target, argv, env = execute.call_args.args
-            self.assertEqual(target, '/Applications/ZCode.app/Contents/MacOS/ZCode')
-            self.assertNotIn('AWS_SECRET_ACCESS_KEY', env)
-            self.assertEqual(env['ZCODE_AGENT_SERVER_COMMAND'],
-                             str(guard.OWNER_HOME / '.local/bin/zcode-backend-safe'))
+            execute.assert_not_called()
 
     def test_packet_preview_never_reads_keychain_even_with_opt_in(self):
         with patch.object(guard, 'read_packet_glm_keychain') as reader:

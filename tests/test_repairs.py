@@ -56,7 +56,8 @@ class RepairTests(unittest.TestCase):
             (home/'.local/bin').mkdir(parents=True)
             app = home/'Applications/Zcode Safe.app'; app.mkdir(parents=True)
             marker = app/'existing'; marker.write_text('keep')
-            with patch.object(installer, 'HOME', home), patch.object(installer, 'STATE', state):
+            with patch.object(installer, 'HOME', home), patch.object(installer, 'STATE', state), \
+                 patch.object(installer, 'configured_bin', return_value=home / '.local/bin'):
                 with self.assertRaises((OSError, RuntimeError)):
                     installer.main()
                 self.assertEqual(list(state.iterdir()), [])
@@ -72,7 +73,8 @@ class RepairTests(unittest.TestCase):
                 if str(path).endswith('/zcode-backend-safe'):
                     raise OSError('synthetic publication failure')
                 return original(path, flags, *args, **kwargs)
-            with patch.object(installer, 'HOME', home), patch.object(installer, 'STATE', state):
+            with patch.object(installer, 'HOME', home), patch.object(installer, 'STATE', state), \
+                 patch.object(installer, 'configured_bin', return_value=home / '.local/bin'):
                 with patch.object(installer.os, 'open', side_effect=fail_launcher), self.assertRaises(OSError):
                     installer.main()
                 self.assertEqual(list(state.iterdir()), [])
@@ -133,7 +135,8 @@ class RepairTests(unittest.TestCase):
         import stat
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp); state = home/'guard/state'
-            with patch.object(installer, 'HOME', home), patch.object(installer, 'STATE', state):
+            with patch.object(installer, 'HOME', home), patch.object(installer, 'STATE', state), \
+                 patch.object(installer, 'configured_bin', return_value=home / '.local/bin'):
                 installer.main()
             app = home/'Applications/Zcode Safe.app'
             info = plistlib.loads((app/'Contents/Info.plist').read_bytes())

@@ -2,12 +2,12 @@
 # Install agentbelt from this checkout into the operator's account.
 #
 # Layout after installation:
-#   $AGENTBELT_ROOT (default ~/.local/share/agentbelt)   code, pinned Node runtime, config.json, state/
+#   $AGENTBELT_ROOT (default ~/.local/share/agentbelt)   code, pinned Node runtime, installation.json, config.json, state/
 #   $AGENTBELT_BIN  (default ~/.local/bin)                  thin wrappers
 #
 # The checkout is the source of truth; the installed copy additionally holds `state/`
 # (isolated homes, imported credentials, review baselines). This script never touches
-# `state/` and never overwrites an existing `config.json`.
+# `state/` and never overwrites an existing `config.json`; `installation.json` records the selected root/bin paths.
 #
 # Every destination is validated before it is written: directories must be real directories
 # owned by the caller, and files are published by writing a temporary file next to the
@@ -15,8 +15,8 @@
 set -eu
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-TARGET="${AGENTBELT_ROOT:-$HOME/.local/share/agentbelt}"
-BIN="${AGENTBELT_BIN:-$HOME/.local/bin}"
+RAW_TARGET="${AGENTBELT_ROOT:-$HOME/.local/share/agentbelt}"
+RAW_BIN="${AGENTBELT_BIN:-$HOME/.local/bin}"
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo "agentbelt requires macOS Seatbelt (sandbox-exec); no other platform is supported." >&2
@@ -24,6 +24,19 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 
 fail() { echo "install.sh: $*" >&2; exit 1; }
+
+case "$RAW_TARGET" in
+  /*) ;;
+  *) fail "AGENTBELT_ROOT must be an absolute path (got $RAW_TARGET)" ;;
+esac
+case "$RAW_BIN" in
+  /*) ;;
+  *) fail "AGENTBELT_BIN must be an absolute path (got $RAW_BIN)" ;;
+esac
+if [ -L "$RAW_TARGET" ]; then fail "refusing symlinked directory: $RAW_TARGET"; fi
+if [ -L "$RAW_BIN" ]; then fail "refusing symlinked directory: $RAW_BIN"; fi
+TARGET="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$RAW_TARGET")"
+BIN="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$RAW_BIN")"
 
 # A destination directory must be a real directory owned by the caller (never a symlink).
 ensure_dir() {
@@ -60,6 +73,7 @@ for file in "$REPO"/*.py "$REPO"/*.mjs "$REPO"/*.cjs "$REPO"/*.swift "$REPO"/LIC
   publish "$file" "$TARGET/$(basename "$file")" 600
 done
 chmod 700 "$TARGET/agentbelt.py"
+publish "$REPO/install.sh" "$TARGET/install.sh" 700
 for file in "$REPO"/tests/*.py; do publish "$file" "$TARGET/tests/$(basename "$file")" 600; done
 for file in "$REPO"/adapters/*.py; do publish "$file" "$TARGET/adapters/$(basename "$file")" 600; done
 publish "$REPO/native/SafeIcon.icns" "$TARGET/native/SafeIcon.icns" 600
@@ -68,8 +82,8 @@ publish "$REPO/runtime/package.json" "$TARGET/runtime/package.json" 600
 publish "$REPO/runtime/package-lock.json" "$TARGET/runtime/package-lock.json" 600
 rsync -a --no-links --exclude __pycache__ "$REPO/vendor/" "$TARGET/vendor/"
 
-# 2. Node for the supervisor (sandbox_runner.mjs). Pin it in config.json so that a later
-#    `nvm install` or `brew upgrade` cannot silently change which binary runs the trusted supervisor.
+# 2. Node and wrapper location. Pin them in config.json so a later nvm install, brew upgrade,
+#    or custom-root install cannot silently change which trusted binaries the launcher uses.
 if [ -L "$TARGET/config.json" ]; then fail "refusing symlinked config.json"; fi
 if [ ! -e "$TARGET/config.json" ]; then
   NODE_BIN="${AGENTBELT_NODE:-$(command -v node || true)}"
@@ -78,7 +92,7 @@ if [ ! -e "$TARGET/config.json" ]; then
   NODE_BIN="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$NODE_BIN")"
   NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
   if [ "$NODE_MAJOR" -lt 22 ]; then fail "node 22 or newer is required for the pinned sandbox runtime (found $("$NODE_BIN" --version 2>/dev/null || echo unknown))"; fi
-  /usr/bin/python3 -c 'import json,sys; print(json.dumps({"node": sys.argv[1]}, indent=2))' "$NODE_BIN" > "$TARGET/config.json.tmp.$$"
+  /usr/bin/python3 -c 'import json,sys; print(json.dumps({"node": sys.argv[1], "bin": sys.argv[2]}, indent=2))' "$NODE_BIN" "$BIN" > "$TARGET/config.json.tmp.$$"
   chmod 600 "$TARGET/config.json.tmp.$$"; mv -f "$TARGET/config.json.tmp.$$" "$TARGET/config.json"
 fi
 NODE_BIN="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["node"])' "$TARGET/config.json")"
@@ -99,7 +113,9 @@ fi
 #    single-quoted so an installation root containing spaces or metacharacters still works.
 QUOTED_SCRIPT="$(printf '%s' "$TARGET/agentbelt.py" | sed "s/'/'\\\\''/g")"
 write_wrapper() {
-  if [ -L "$BIN/$1" ]; then fail "refusing to replace symlinked wrapper: $BIN/$1"; fi
+  if [ -L "$BIN/$1" ] || { [ -e "$BIN/$1" ] && [ ! -f "$BIN/$1" ]; }; then
+    fail "refusing to replace symlinked or non-file wrapper: $BIN/$1"
+  fi
   tmp="$BIN/$1.tmp.$$"
   printf '#!/bin/sh\nexec /usr/bin/python3 -I '"'"'%s'"'"' %s "$@"\n' "$QUOTED_SCRIPT" "$2" > "$tmp"
   chmod 700 "$tmp"; mv -f "$tmp" "$BIN/$1"
@@ -110,6 +126,15 @@ write_wrapper opencode-safe "opencode"
 write_wrapper safekimi "kimi --"
 write_wrapper token-usage "usage"
 
+# Persist installer-selected paths separately from config.json. Existing config.json is never rewritten.
+if [ -L "$TARGET/installation.json" ] || { [ -e "$TARGET/installation.json" ] && [ ! -f "$TARGET/installation.json" ]; }; then
+  fail "refusing symlinked or non-file installation.json"
+fi
+/usr/bin/python3 -c 'import json,sys; print(json.dumps({"root": sys.argv[1], "bin": sys.argv[2]}, indent=2))' "$TARGET" "$BIN" > "$TARGET/installation.json.tmp.$$"
+chmod 600 "$TARGET/installation.json.tmp.$$"
+mv -f "$TARGET/installation.json.tmp.$$" "$TARGET/installation.json"
+
+
 cat <<EOF
 agentbelt installed to $TARGET
   node:      $NODE_BIN
@@ -118,6 +143,7 @@ Next steps:
   1. agentbelt init                         # create state for the agents that are installed, record baselines
   2. agentbelt doctor                       # verify runtime, baselines, integrations
   3. /usr/bin/python3 "$TARGET/adapters/configure_existing.py" --authorized-live-settings   # import OpenCode credentials
-  4. cd <project> && safecode                 # or safekimi
+  4. /usr/bin/python3 "$TARGET/adapters/install_profiles.py" --upgrade-launcher   # update an existing managed Safe app only
+  5. cd <project> && safecode                 # or safekimi
 Run the test suite from $TARGET: /usr/bin/python3 -m unittest discover -s tests
 EOF

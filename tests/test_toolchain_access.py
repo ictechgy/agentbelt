@@ -41,6 +41,12 @@ class ToolchainVisibilityTests(unittest.TestCase):
         _, text = confined('npm --version 2>&1 | head -1\n')
         self.assertRegex(text.strip(), r'^\d+\.\d+\.\d+', text[:300])
 
+    def test_brew_script_remains_available_without_opening_host_configuration(self):
+        status, text = confined('brew --version\n',
+                               {'HOMEBREW_NO_AUTO_UPDATE': '1', 'HOMEBREW_NO_ANALYTICS': '1'})
+        self.assertEqual(status, 0, text[:300])
+        self.assertIn('Homebrew', text)
+
 
 class DartCoverageTests(unittest.TestCase):
     def test_dart_coverage_runs_on_the_session_loopback_port(self):

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import pwd
+import shutil
 import struct
 import subprocess
 import sys
@@ -157,29 +158,41 @@ def autoclaw_candidate(app=AUTOCLAW_APP):
     return {'version': version, 'zcodeCliVersion': manifest['zcodeCliVersion'], 'zcodeSha256': digest(executable)}
 
 
-def kimi_candidate(binary=None):
-    """If it is installed, the version and hash of Kimi Code. None if it is not (optional install).
-
-    The version probe runs with a temporary HOME and with telemetry and auto-update turned off. `--version` only prints the built-in build information and exits.
-    """
-    binary = Path(binary) if binary is not None else guard_paths().KIMI
+def confined_candidate(binary, mode, environment):
+    """Probe a protected copy without host authority, then reject a changed source."""
+    agentbelt = guard_paths()
+    binary = Path(binary)
     if not binary.is_file():
         return None
-    # Running a not-yet-reviewed candidate on the host as is would let that binary read the clipboard and host files before it is
-    # checked (review HIGH). The probe also runs inside the guard policy: no network, the one binary file as the only read, stdout only.
-    sys.path.insert(0, str(ROOT))
-    import agentbelt
-    with tempfile.TemporaryDirectory(prefix='guard-kimi-version-', dir=Path.home()) as work, tempfile.TemporaryFile() as out:
-        status = agentbelt.run_confined('kimi-probe', Path(work), [str(binary), '--version'], domains=[], ephemeral=True,
-                                          # If stderr is a file outside the sandbox, Node aborts with fstat EPERM (REPAIRS 2026-09-16). Pinned to /dev/null.
-                                          extra_reads=[binary], stdout=out, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                          extra_env={'KIMI_DISABLE_TELEMETRY': '1', 'KIMI_CODE_NO_AUTO_UPDATE': '1',
-                                                     'KIMI_CLI_NO_AUTO_UPDATE': '1'})
-        out.seek(0)
-        version = out.read(4096).decode(errors='replace').strip()
-    if status or not version or len(version) > 50 or any(c not in '0123456789.-abcdefghijklmnopqrstuvwxyz' for c in version):
-        raise ValueError('Kimi Code version probe failed')
-    return {'version': version, 'sha256': digest(binary)}
+    state = agentbelt.private_dir(ROOT / 'state')
+    with tempfile.TemporaryDirectory(prefix='candidate-', dir=state) as temporary:
+        directory = Path(temporary)
+        staged = directory / 'candidate'
+        # Copy without executing any part of the unreviewed candidate. The copy
+        # stays outside the child's writable workspace and ephemeral HOME.
+        shutil.copyfile(binary, staged)
+        staged.chmod(0o500)
+        reviewed_digest = digest(staged)
+        work = agentbelt.private_dir(directory / 'work')
+        with tempfile.TemporaryFile() as out:
+            status = agentbelt.run_confined(
+                mode, work, [str(staged), '--version'], domains=[], ephemeral=True,
+                extra_reads=[staged], stdout=out, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                extra_env=environment, github=False, short_tmpdir=True, timeout=15)
+            out.seek(0)
+            version = out.read(4096).decode(errors='replace').strip()
+        if status or not version or len(version) > 50 or any(c not in '0123456789.-abcdefghijklmnopqrstuvwxyz' for c in version):
+            raise ValueError('Confined candidate version probe failed')
+        if digest(binary) != reviewed_digest:
+            raise ValueError('Candidate changed during its version probe')
+        return {'version': version, 'sha256': reviewed_digest}
+
+
+def kimi_candidate(binary=None):
+    """Version/hash of an optional Kimi installation, measured on the same confined copy."""
+    return confined_candidate(Path(binary) if binary is not None else guard_paths().KIMI, 'kimi-probe',
+                              {'KIMI_DISABLE_TELEMETRY': '1', 'KIMI_CODE_NO_AUTO_UPDATE': '1',
+                               'KIMI_CLI_NO_AUTO_UPDATE': '1'})
 
 
 def merged_baseline(current, saved):
@@ -193,18 +206,9 @@ def merged_baseline(current, saved):
 
 def opencode_candidate():
     """Version and hash of the installed OpenCode binary, or None when it is not installed."""
-    binary = guard_paths().OPENCODE
-    if not binary.is_file():
-        return None
-    with tempfile.TemporaryDirectory(prefix='guard-version-') as home:
-        run = subprocess.run([str(binary), '--version'], cwd=home, capture_output=True,
-                             text=True, timeout=15, env={
-            'HOME': home, 'PATH': '/usr/bin:/bin', 'OPENCODE_DISABLE_AUTOUPDATE': 'true',
-            'OPENCODE_DISABLE_MODELS_FETCH': 'true', 'OPENCODE_DISABLE_PROJECT_CONFIG': 'true'})
-    version = run.stdout.strip()
-    if run.returncode or not version or len(version) > 50 or any(c not in '0123456789.-abcdefghijklmnopqrstuvwxyz' for c in version):
-        raise ValueError('OpenCode version probe failed')
-    return {'version': version, 'sha256': digest(binary)}
+    return confined_candidate(guard_paths().OPENCODE, 'opencode-probe',
+                              {'OPENCODE_DISABLE_AUTOUPDATE': 'true', 'OPENCODE_DISABLE_MODELS_FETCH': 'true',
+                               'OPENCODE_DISABLE_PROJECT_CONFIG': 'true'})
 
 
 def zcode_candidate(app=None):

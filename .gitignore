@@ -1,6 +1,7 @@
 # Runtime state of an installation: isolated homes, credentials, baselines, logs. Never commit.
 state/
 config.json
+installation.json
 # Pinned Node dependencies are installed by install.sh (npm ci).
 runtime/node_modules/
 # Build artifact of ZcodeSafe.swift; install.sh rebuilds it.

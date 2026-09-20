@@ -57,7 +57,10 @@ class CompatibilityTests(unittest.TestCase):
                 self.assertFalse(result['safe_launch'])
                 receipt=root/'state/runtime/zcode-gui.json';receipt.parent.mkdir(parents=True)
                 receipt.write_text(json.dumps({'pid':101,'started':'current-start'}))
-                self.assertTrue(g.live_zcode_status()['safe_launch'])
+                status = g.live_zcode_status()
+                self.assertTrue(status['backend_launch_recorded'])
+                self.assertFalse(status['safe_launch'])
+                self.assertFalse(status['gui_egress_confined'])
                 receipt.write_text(json.dumps({'pid':101,'started':'old-start'}))
                 self.assertFalse(g.live_zcode_status()['safe_launch'])
 

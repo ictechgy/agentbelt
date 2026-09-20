@@ -1,11 +1,147 @@
 import AppKit
 import Foundation
 import CoreFoundation
+import CoreServices
 
 // Paths are derived from the account. A hard-coded user path would make installation impossible on another account.
 let homeDirectory = NSHomeDirectory()
 let userName = NSUserName()
-let guardRoot = homeDirectory + "/.local/share/agentbelt"
+let defaultGuardRoot = homeDirectory + "/.local/share/agentbelt"
+let privateBundleIdentifier = "local.agentbelt.zcode.snapshot-blocked"
+let safeLauncherBundleIdentifier = "local.agentbelt.zcode.safe-launcher"
+let zcodeURLScheme = "zcode"
+let privateApplicationName = "ZCode Snapshot Blocked"
+
+struct VerifiedPrivateLaunch {
+    let appPath: String
+    let environment: [String: String]
+    let generation: String
+    let privatePID: Int?
+}
+
+func isValidInstalledPath(_ path: String) -> Bool {
+    guard !path.isEmpty, path.first == "/", !path.contains("\0"), path != "/",
+          !path.unicodeScalars.contains(where: { $0.value < 0x20 }) else { return false }
+    let components = path.split(separator: "/", omittingEmptySubsequences: true)
+    return !components.contains { $0 == "." || $0 == ".." }
+}
+
+/// A present bundle setting is trusted only after strict path validation. A missing key keeps old bundles on the default.
+func resolveInstalledPath(_ value: Any?, key: String, fallback: String) -> String {
+    guard let value else { return fallback }
+    guard let path = value as? String, isValidInstalledPath(path) else {
+        fatalError("invalid installed path metadata for " + key)
+    }
+    return path
+}
+
+func installedPath(_ key: String, fallback: String) -> String {
+    resolveInstalledPath(Bundle.main.object(forInfoDictionaryKey: key), key: key, fallback: fallback)
+}
+
+func backendEnvironment(root: String) -> [String: String] {
+    let arguments = ["-I", root + "/agentbelt.py", "zcode-backend", "app-server", "--stdio"]
+    guard let data = try? JSONSerialization.data(withJSONObject: arguments) else {
+        fatalError("could not encode the protected backend arguments")
+    }
+    return ["ZCODE_AGENT_SERVER_COMMAND": "/usr/bin/python3",
+            "ZCODE_AGENT_SERVER_ARGS_JSON": String(decoding: data, as: UTF8.self)]
+}
+
+func isSafePrivateAppPath(_ path: String, root: String) -> Bool {
+    guard isValidInstalledPath(path) else { return false }
+    return path == root + "/state/zcode-private/ZCode.app"
+}
+
+func isSafeEnvironmentValue(_ value: String, maxLength: Int = 4096) -> Bool {
+    !value.isEmpty && value.count <= maxLength && !value.unicodeScalars.contains(where: { $0.value < 0x20 })
+}
+
+func verifiedPrivateLaunch(from data: Data, status: Int32, root: String) -> VerifiedPrivateLaunch? {
+    guard status == 0,
+          let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          result["snapshot_uploads_blocked"] as? Bool == true,
+          result["auto_updates_blocked"] as? Bool == true,
+          result["gui_egress_confined"] as? Bool == false,
+          result["bundle_id"] as? String == privateBundleIdentifier,
+          let generation = result["generation"] as? String,
+          generation.count == 32,
+          generation.unicodeScalars.allSatisfy({ ($0.value >= 48 && $0.value <= 57) || ($0.value >= 97 && $0.value <= 102) }),
+          let appPath = result["app_path"] as? String,
+          isSafePrivateAppPath(appPath, root: root),
+          let rawEnvironment = result["environment"] as? [String: Any] else { return nil }
+    let privatePID: Int?
+    if let rawPID = result["private_gui_pid"], !(rawPID is NSNull) {
+        guard let pid = rawPID as? Int, pid > 0 else { return nil }
+        privatePID = pid
+    } else {
+        privatePID = nil
+    }
+
+    let requiredKeys = ["ZCODE_AGENT_SERVER_COMMAND", "ZCODE_AGENT_SERVER_ARGS_JSON",
+                        "ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT", "ZCODE_DESKTOP_APPLICATION_NAME",
+                        "ZCODE_DESKTOP_USER_DATA_DIR", "ZCODE_DESKTOP_SESSION_DATA_DIR"]
+    guard Set(rawEnvironment.keys) == Set(requiredKeys) else { return nil }
+    var environment = [String: String]()
+    for key in requiredKeys {
+        guard let value = rawEnvironment[key] as? String, isSafeEnvironmentValue(value) else { return nil }
+        environment[key] = value
+    }
+    guard environment["ZCODE_AGENT_SERVER_COMMAND"] == "/usr/bin/python3",
+          environment["ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT"] == "1",
+          environment["ZCODE_DESKTOP_APPLICATION_NAME"] == privateApplicationName,
+          isValidInstalledPath(environment["ZCODE_DESKTOP_USER_DATA_DIR"]!),
+          isValidInstalledPath(environment["ZCODE_DESKTOP_SESSION_DATA_DIR"]!),
+          environment["ZCODE_DESKTOP_USER_DATA_DIR"] == root + "/state/zcode-private/user-data",
+          environment["ZCODE_DESKTOP_SESSION_DATA_DIR"] == root + "/state/zcode-private/session" else { return nil }
+    guard let argsData = environment["ZCODE_AGENT_SERVER_ARGS_JSON"]!.data(using: .utf8),
+          let args = try? JSONSerialization.jsonObject(with: argsData) as? [String],
+          args == ["-I", root + "/agentbelt.py", "zcode-private-backend", "--generation", generation, "app-server", "--stdio"] else { return nil }
+    return VerifiedPrivateLaunch(appPath: appPath, environment: environment, generation: generation, privatePID: privatePID)
+}
+
+func privateOpenConfiguration(_ launch: VerifiedPrivateLaunch) -> NSWorkspace.OpenConfiguration {
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = true
+    configuration.createsNewApplicationInstance = false
+    let environment = launch.environment
+    configuration.environment = [
+        "HOME": homeDirectory, "USER": userName, "LOGNAME": userName,
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
+        "ZCODE_AGENT_SERVER_COMMAND": environment["ZCODE_AGENT_SERVER_COMMAND"]!,
+        "ZCODE_AGENT_SERVER_ARGS_JSON": environment["ZCODE_AGENT_SERVER_ARGS_JSON"]!,
+        "ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT": environment["ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT"]!,
+        "ZCODE_DESKTOP_APPLICATION_NAME": environment["ZCODE_DESKTOP_APPLICATION_NAME"]!,
+        "ZCODE_DESKTOP_USER_DATA_DIR": environment["ZCODE_DESKTOP_USER_DATA_DIR"]!,
+        "ZCODE_DESKTOP_SESSION_DATA_DIR": environment["ZCODE_DESKTOP_SESSION_DATA_DIR"]!
+    ]
+    return configuration
+}
+
+func protocolHandler() -> String? {
+    LSCopyDefaultHandlerForURLScheme(zcodeURLScheme as CFString)?.takeRetainedValue() as String?
+}
+
+func protocolStatus() -> [String: Any] {
+    ["scheme": zcodeURLScheme, "handler": protocolHandler() ?? NSNull(),
+     "manager_bundle_id": safeLauncherBundleIdentifier,
+     "registered": protocolHandler() == safeLauncherBundleIdentifier]
+}
+
+func protocolRegistrationArguments() -> [String] {
+    [zcodeURLScheme, safeLauncherBundleIdentifier]
+}
+
+func registerZcodeProtocol() throws {
+    let arguments = protocolRegistrationArguments()
+    guard LSSetDefaultHandlerForURLScheme(arguments[0] as CFString, arguments[1] as CFString) == noErr else {
+        throw NSError(domain: "SafeProtocol", code: 1)
+    }
+    let data = try JSONSerialization.data(withJSONObject: protocolStatus(), options: [.sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
+}
+
+let guardRoot = installedPath("AgentbeltRoot", fallback: defaultGuardRoot)
 let guardScript = guardRoot + "/agentbelt.py"
 let safeAppPath = homeDirectory + "/Applications/Zcode Safe.app"
 let dockBackupPath = guardRoot + "/state/backups/dock-before-safe.plist"
@@ -31,6 +167,11 @@ func runGuard(_ arguments: [String]) -> (Int32, Data) {
         task.waitUntilExit()
         return (task.terminationStatus, data)
     } catch { return (125, Data()) }
+}
+
+func checkedPrivateLaunch() -> VerifiedPrivateLaunch? {
+    let (status, data) = runGuard(["check-zcode-private"])
+    return verifiedPrivateLaunch(from: data, status: status, root: guardRoot)
 }
 
 func safeIcon() -> NSImage {
@@ -94,7 +235,9 @@ func pinDock() throws {
 final class SafeDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     let status = NSTextField(wrappingLabelWithString: "보호 실행 상태를 확인합니다.")
-    var launching = false
+    private var hasFinishedLaunching = false
+    private var pendingURLs = [URL]()
+    private var launchInProgress = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.applicationIconImage = safeIcon()
         let menu = NSMenu(), appItem = NSMenuItem(), appMenu = NSMenu()
@@ -108,7 +251,7 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
         title.font = .systemFont(ofSize: 25, weight: .semibold)
         title.frame = NSRect(x: 26, y: 193, width: 425, height: 35)
         status.frame = NSRect(x: 26, y: 105, width: 425, height: 78)
-        let open = NSButton(title: "Zcode 열기", target: self, action: #selector(openZcode))
+        let open = NSButton(title: "보호된 Zcode 열기", target: self, action: #selector(openZcode))
         open.frame = NSRect(x: 24, y: 60, width: 135, height: 32); open.bezelStyle = .rounded
         let check = NSButton(title: "상태 확인", target: self, action: #selector(showStatus))
         check.frame = NSRect(x: 172, y: 60, width: 125, height: 32); check.bezelStyle = .rounded
@@ -117,65 +260,87 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
         let copy = NSButton(title: "GLM 키 등록 명령 복사", target: self, action: #selector(copyKeyCommand))
         copy.frame = NSRect(x: 24, y: 16, width: 230, height: 32); copy.bezelStyle = .rounded
         for view in [title, status, open, check, restore, copy] { window.contentView?.addSubview(view) }
-        window.center(); openZcode()
+        window.center(); hasFinishedLaunching = true
+        if pendingURLs.isEmpty { openZcode() } else { forwardPendingURLs() }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { openZcode(); return true }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let accepted = urls.filter { url in
+            guard url.scheme?.lowercased() == zcodeURLScheme, url.absoluteString.count <= 8192 else { return false }
+            return !url.absoluteString.unicodeScalars.contains(where: { $0.value < 0x20 })
+        }
+        if pendingURLs.count + accepted.count <= 8 { pendingURLs.append(contentsOf: accepted) }
+        if hasFinishedLaunching { forwardPendingURLs() }
+    }
     @objc func showStatus() {
-        let (code, data) = runGuard(["live-status"])
-        if code == 0, let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if value["safe_launch"] as? Bool == true {
-                let count = value["sandboxed_children"] as? Int ?? 0
-                status.stringValue = count > 0 ? "Safe 실행 경로와 보호된 백엔드를 확인했습니다.\n실제 작업 창의 이름은 Zcode로 표시됩니다." : "Safe 실행 경로입니다. 프로젝트를 열면 보호 백엔드가 시작됩니다."
-            } else { status.stringValue = value["gui_running"] as? Bool == true ? "일반 Zcode가 실행 중이거나 보호 경로를 확인할 수 없습니다. 작업을 저장하고 Zcode를 종료한 뒤 Safe로 여세요." : "Zcode가 종료되어 있습니다. 아래 버튼으로 보호 실행하세요." }
-        } else { status.stringValue = "상태를 확인하지 못했습니다. Terminal에서 agentbelt doctor를 실행하세요." }
+        guard let launch = checkedPrivateLaunch() else {
+            status.stringValue = "보호된 비공개 Zcode 복제본을 확인하지 못했습니다. 원본 GUI는 실행하지 않습니다."
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
+        }
+        if launch.privatePID != nil {
+            status.stringValue = "스냅샷 업로드와 자동 업데이트가 차단된 보호된 비공개 복제본이 실행 중입니다. GUI 자체는 OS 샌드박스로 격리되지 않습니다."
+        } else {
+            status.stringValue = "보호된 비공개 복제본을 시작할 수 있습니다. GUI 자체는 OS 샌드박스로 격리되지 않습니다."
+        }
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     @objc func openZcode() {
-        let (_, data) = runGuard(["live-status"])
-        guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { showStatus(); return }
-        if value["gui_running"] as? Bool == true {
-            guard value["safe_launch"] as? Bool == true else { showStatus(); return }
-            if let pid = value["gui_pid"] as? Int, let app = NSRunningApplication(processIdentifier: pid_t(pid)) { app.activate(options: [.activateIgnoringOtherApps]) }
-            return
+        guard let launch = checkedPrivateLaunch() else {
+            status.stringValue = "보호된 비공개 Zcode 복제본을 확인하지 못했습니다. 원본 GUI는 실행하지 않습니다."
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
         }
-        if launching { return }
-        guard runGuard(["check-zcode"]).0 == 0 else {
-            status.stringValue = "설치 버전 또는 보호 설정 확인에 실패했습니다. Terminal에서 agentbelt doctor를 실행하세요."
-            window.makeKeyAndOrderFront(nil); return
+        if let rawPID = launch.privatePID,
+           let app = NSRunningApplication(processIdentifier: pid_t(rawPID)) {
+            app.activate(options: [.activateIgnoringOtherApps]); forwardPendingURLs(); return
         }
-        launching = true
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.createsNewApplicationInstance = true
-        let searchPath = ([pinnedNodeBinDirectory()].compactMap { $0 } + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]).joined(separator: ":")
-        configuration.environment = [
-            "HOME": homeDirectory, "USER": userName, "LOGNAME": userName,
-            "PATH": searchPath,
-            "LANG": "en_US.UTF-8",
-            "ZCODE_AGENT_SERVER_COMMAND": homeDirectory + "/.local/bin/zcode-backend-safe",
-            "ZCODE_AGENT_SERVER_ARGS_JSON": "[\"app-server\",\"--stdio\"]",
-            "ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT": "1"
-        ]
-        status.stringValue = "보호된 Zcode를 시작합니다."
-        // LaunchServices gives the work window its own application identity;
-        // quitting this Dock manager must not quit the user's Zcode session.
-        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/ZCode.app"), configuration: configuration) { [weak self] app, error in
+        launchPrivateClone(launch)
+    }
+    private func launchPrivateClone(_ launch: VerifiedPrivateLaunch) {
+        guard !launchInProgress else { return }
+        launchInProgress = true
+        status.stringValue = "스냅샷 업로드와 자동 업데이트가 차단된 보호된 백엔드를 사용하는 비공개 복제본을 시작합니다. GUI 자체는 OS 샌드박스로 격리되지 않습니다."
+        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: launch.appPath),
+                                            configuration: privateOpenConfiguration(launch)) { [weak self] app, error in
             DispatchQueue.main.async {
-                self?.launching = false
-                guard error == nil, let app = app else {
-                    self?.status.stringValue = "Zcode를 시작하지 못했습니다. agentbelt doctor로 확인하세요."
+                self?.launchInProgress = false
+                guard let app, error == nil else {
+                    self?.status.stringValue = "보호된 비공개 복제본을 시작하지 못했습니다. Terminal에서 agentbelt doctor로 확인하세요."
                     self?.window.makeKeyAndOrderFront(nil); return
                 }
-                let result = runGuard(["record-zcode-launch", String(app.processIdentifier)])
-                self?.status.stringValue = result.0 == 0 ? "보호 실행 경로로 Zcode를 열었습니다." : "실행된 앱의 보호 상태를 다시 확인하세요."
-                app.activate(options: [.activateIgnoringOtherApps])
+                let result = runGuard(["record-zcode-private-launch", String(app.processIdentifier), "--generation", launch.generation])
+                self?.status.stringValue = result.0 == 0 ? "보호된 비공개 Zcode 복제본을 열었습니다." : "복제본은 열렸지만 보호 실행 기록을 확인하지 못했습니다."
+                if result.0 == 0 {
+                    app.activate(options: [.activateIgnoringOtherApps])
+                    self?.forwardPendingURLs()
+                }
+            }
+        }
+    }
+    private func forwardPendingURLs() {
+        guard hasFinishedLaunching, !pendingURLs.isEmpty, !launchInProgress else { return }
+        guard let launch = checkedPrivateLaunch() else {
+            status.stringValue = "비공개 복제본을 확인하지 못해 링크를 전달하지 않았습니다."
+            return
+        }
+        guard launch.privatePID != nil else {
+            launchPrivateClone(launch)
+            return
+        }
+        let urls = pendingURLs; pendingURLs.removeAll()
+        NSWorkspace.shared.open(urls, withApplicationAt: URL(fileURLWithPath: launch.appPath),
+                                configuration: privateOpenConfiguration(launch)) { [weak self] _, error in
+            if error != nil {
+                DispatchQueue.main.async {
+                    self?.pendingURLs.insert(contentsOf: urls, at: 0)
+                    self?.status.stringValue = "보호된 비공개 복제본으로 링크를 전달하지 못했습니다."
+                }
             }
         }
     }
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        menu.addItem(withTitle: "Zcode 열기", action: #selector(openZcode), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "보호된 Zcode 열기", action: #selector(openZcode), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Safe 상태", action: #selector(showStatus), keyEquivalent: "").target = self
         menu.addItem(withTitle: "기존 대화 복원", action: #selector(restoreHistory), keyEquivalent: "").target = self
         return menu
@@ -200,6 +365,11 @@ final class SafeDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--make-icon" {
     try makeIconset(CommandLine.arguments[2])
+} else if CommandLine.arguments.dropFirst() == ["--protocol-status"] {
+    let data = try JSONSerialization.data(withJSONObject: protocolStatus(), options: [.sortedKeys])
+    print(String(decoding: data, as: UTF8.self))
+} else if CommandLine.arguments.dropFirst() == ["--register-zcode-protocol"] {
+    try registerZcodeProtocol()
 } else if CommandLine.arguments.dropFirst() == ["--dock-status"] {
     let tiles = CFPreferencesCopyAppValue("persistent-apps" as CFString, "com.apple.dock" as CFString) as? [[String: Any]] ?? []
     let paths = tiles.compactMap { tile -> String? in

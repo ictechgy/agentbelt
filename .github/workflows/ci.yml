@@ -26,7 +26,15 @@ jobs:
         working-directory: /Users/runner/.local/share/agentbelt
         run: |
           /usr/bin/python3 -m unittest -v \
-            tests.test_boundaries tests.test_terminal_boundary tests.test_hardening_fixes \
+            tests.test_boundaries tests.test_terminal_boundary tests.test_terminal_proxy \
+            tests.test_kimi_binary_privacy tests.test_hardening_fixes \
             tests.test_zcode_hook tests.test_orca_bridge tests.test_prompt_telemetry \
             tests.test_history_restore tests.test_usage_cli tests.test_swift_toolchain \
-            tests.test_temp_and_scoped_rules tests.test_bootstrap
+            tests.test_temp_and_scoped_rules tests.test_bootstrap \
+            tests.test_security_regressions tests.test_packet_queue tests.test_gemini_review \
+            tests.test_packet_promote_concurrency tests.test_installation_paths \
+            tests.test_gui_privacy tests.test_privacy_boundaries tests.test_review_scope \
+            tests.test_riskgate_audit tests.test_packet_privacy tests.test_profile_domains \
+            tests.test_packet_relay.RequestValidationTests tests.test_packet_relay.ProviderTests \
+            tests.test_packet_relay.ChannelTests tests.test_packet_promote tests.test_keychain_cancellation \
+            tests.test_shot_queue tests.test_shot_watcher

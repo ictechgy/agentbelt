@@ -236,7 +236,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(captured['workspace'], workspace.resolve())
         self.assertEqual(captured['command'], ['/synthetic/state/autoclaw-runtime/zcode', 'agent-server'])
         self.assertIn('/synthetic/state/autoclaw-runtime/zcode', [str(p) for p in captured['extra_reads']])
-        self.assertEqual(sorted(captured['read_only_workspace_paths']), ['.agents/mcp.json', '.zcode', 'zcode.json'])
+        self.assertEqual(sorted(captured['blocked_workspace_paths']), ['.agents/mcp.json', '.zcode', 'zcode.json'])
+        self.assertTrue(captured['github'])
         self.assertEqual(captured['extra_env']['AGENTBELT_BROKER_PORT'], '43210')
         self.assertEqual(captured['args'][0], ['pub.dev:443'])
         # A repository-scoped GitHub token is injected as in safecode and Zcode Safe (user decision, 2026-09-15). Being yolo, push also goes through without confirmation.
@@ -404,7 +405,7 @@ class WorkspaceConfigLockTests(unittest.TestCase):
                     self.assertEqual(g.main(['zcode-backend', 'app-server', '--stdio']), 0)
             finally:
                 os.chdir(previous)
-        self.assertEqual(sorted(captured['read_only_workspace_paths']), ['.agents/mcp.json', '.zcode', 'zcode.json'])
+        self.assertEqual(sorted(captured['blocked_workspace_paths']), ['.agents/mcp.json', '.zcode', 'zcode.json'])
 
 
 class LoopbackBoundaryTests(unittest.TestCase):
@@ -496,18 +497,20 @@ class ShortTempDirTests(unittest.TestCase):
 
 
 class GithubOptOutTests(unittest.TestCase):
-    def test_run_confined_can_withhold_the_github_token(self):
+    def test_run_confined_requires_explicit_github_grant(self):
         seen = {}
-        def fake_clean(home, github=None):
+        def fake_clean(home, github=None, copy_git_identity=True):
             seen['github'] = github
             return {'HOME': str(home), 'PATH': '/usr/bin:/bin'}
         with tempfile.TemporaryDirectory(prefix='gh-', dir=Path.home()) as tmp, \
              patch.object(g, 'github_token', lambda: 'synthetic-token'), \
              patch.object(g, 'clean_environment', fake_clean), \
-             patch.object(g.subprocess, 'call', return_value=0):
+             patch('terminal_proxy.run', return_value=0):
             g.run_confined('exec', Path(tmp), ['/bin/true'], ephemeral=True, github=False)
             self.assertIsNone(seen['github'])
             g.run_confined('exec', Path(tmp), ['/bin/true'], ephemeral=True)
+            self.assertIsNone(seen['github'])
+            g.run_confined('exec', Path(tmp), ['/bin/true'], ephemeral=True, github=True)
             self.assertEqual(seen['github'], 'synthetic-token')
 
 

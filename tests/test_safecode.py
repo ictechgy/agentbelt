@@ -24,6 +24,7 @@ class SafecodeTests(unittest.TestCase):
                  patch.object(guard.os, 'getcwd', return_value=str(work)), \
                  patch.dict(os.environ, {'PWD': str(Path.home())}), \
                  patch.object(guard, 'verify_opencode_binary', return_value='test'), \
+                 patch.object(guard, 'stage_opencode_binary', lambda: guard.OPENCODE), \
                  patch.object(guard, 'load_opencode_profile', return_value={'domains': []}), \
                  patch.object(guard, 'run_confined', return_value=0) as execute:
                 result = guard.main(['safecode', '--', 'run', '--model', 'provider/model', 'prompt with spaces'])
@@ -31,6 +32,7 @@ class SafecodeTests(unittest.TestCase):
             args = execute.call_args.args
             self.assertEqual(args[1], work)
             self.assertEqual(args[2], [str(guard.OPENCODE), 'run', '--model', 'provider/model', 'prompt with spaces'])
+            self.assertTrue(execute.call_args.kwargs['github'])
 
     def test_home_directory_is_still_rejected(self):
         with patch.object(guard.os, 'getcwd', return_value=str(Path.home())), \

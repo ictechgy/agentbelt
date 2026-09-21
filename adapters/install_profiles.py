@@ -219,7 +219,7 @@ def main(upgrade_launcher=False):
     app = HOME / 'Applications/Zcode Safe.app'
     launcher = '#!/bin/sh\nexec /usr/bin/python3 -I ' + shlex.quote(str(ROOT / 'agentbelt.py'))
     profile = {'domains': [], 'candidateDomains': ['api.z.ai:443'],
-               'reviewedDesktopVersion': '3.12.3', 'reviewedAgentVersion': '0.16.5'}
+               'reviewedDesktopVersion': '3.14.1', 'reviewedAgentVersion': '0.16.9'}
     native = ROOT / 'native/ZcodeSafeLauncher'
     icon = ROOT / 'native/SafeIcon.icns'
     if not native.is_file() or not icon.is_file():

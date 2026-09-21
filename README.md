@@ -131,12 +131,16 @@ The first command shows the former handler so it can be recorded for rollback:
 Then open Zcode Safe.app to launch the verified private copy. The legacy original GUI gates
 remain blocked. Each installation creates a new generation; do not copy a manifest between roots.
 
-The copy is version-locked to `3.12.3`, uses bundle ID
+The copy is version-locked to `3.14.1`, uses bundle ID
 `local.agentbelt.zcode.snapshot-blocked`, and lives below the guard root. `check-zcode-private`
 verifies its manifest and executable hash and returns a 32-character lowercase `generation`; the
 manager accepts only the matching app path, generation-bound backend argv, private profile/session
 directories, and the explicit flags that snapshot uploads and automatic updates are blocked. The
 updater and the clone's startup protocol registration stay disabled.
+The reviewed 3.14.1 distribution removed the previous repository snapshot sidecar;
+whole-archive and CLI hashes pin that version. Conversation-share publishing remains
+disabled by the local patch. The bundled storage-only Worker is retained so database
+preparation can finish while model sessions use the guarded backend.
 
 The backend continues through the existing Seatbelt path. The desktop GUI itself is not OS
 sandboxed, so `safe_launch` remains `false` and a backend receipt does not establish GUI

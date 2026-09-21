@@ -27,17 +27,17 @@ from adapters import zcode_privacy as privacy  # noqa: E402
 
 PUBLIC_PROOF_ROOT = Path(os.environ["AGENTBELT_ZCODE_PROOF_ROOT"]) if os.environ.get("AGENTBELT_ZCODE_PROOF_ROOT") else None
 PUBLIC_HOST_SOURCE = (
-    PUBLIC_PROOF_ROOT / "zcode-oss-3.12.3-2026-09-18/source/out/host/index.js"
+    PUBLIC_PROOF_ROOT / "zcode-3.14.1-upgrade-2026-09-21/source/out/host/index.js"
     if PUBLIC_PROOF_ROOT
     else Path("/missing-public-zcode-host")
 )
 PUBLIC_MAIN_SOURCE = (
-    PUBLIC_PROOF_ROOT / "zcode-oss-3.12.3-2026-09-18/source/out/main/index.js"
+    PUBLIC_PROOF_ROOT / "zcode-3.14.1-upgrade-2026-09-21/source/out/main/index.js"
     if PUBLIC_PROOF_ROOT
     else Path("/missing-public-zcode-main")
 )
 PUBLIC_SCHEDULER_SOURCE = (
-    PUBLIC_PROOF_ROOT / "zcode-oss-3.12.3-2026-09-18/source/out/scheduler/index.js"
+    PUBLIC_PROOF_ROOT / "zcode-3.14.1-upgrade-2026-09-21/source/out/scheduler/index.js"
     if PUBLIC_PROOF_ROOT
     else Path("/missing-public-zcode-scheduler")
 )
@@ -121,31 +121,36 @@ class ZcodePrivatePureTests(unittest.TestCase):
         generation = "0123456789abcdef0123456789abcdef"
         patched = privacy.patch_main_payload(source, root, generation)
         self.assertEqual(len(source), len(patched))
-        self.assertIn(b'dr="ZCode Snapshot Blocked"', patched)
-        self.assertIn(b"oc=!1", patched)
+        self.assertIn(b'function Mn(){return !1', patched)
+        self.assertIn(b'H={kind:"idle",enabled:!1}', patched)
         self.assertIn(generation.encode(), patched)
+        self.assertIn(b'vr="ZCode Snapshot Blocked"', patched)
+        self.assertIn(b"Hc=!1", patched)
+        self.assertIn(b"ZCODE_AGENT_SERVER_COMMAND", patched)
         self.assertIn(b"zcode-private-backend", patched)
-        self.assertNotIn(b'by(g,{iconPath:hH});', patched)
+        self.assertNotIn(b'xb(w,{iconPath:qz});', patched)
 
     @staticmethod
     def _updater_gate_spy(payload, name, marker, invocation, bindings):
         def function(function_name, function_marker):
             start = payload.index(("function " + function_name + "(").encode())
-            end = payload.index(("}i(" + function_name + ',"' + function_marker + '")').encode(), start)
+            end = payload.index(("}s(" + function_name + ',"' + function_marker + '")').encode(), start)
             return payload[start : end + 1].decode("utf-8")
 
         script = """
 const calls = [];
 const g = {info(){}, warn(){}, error(){}};
-const jt = {isPackaged:true};
-function Ki(){return false;}
+const tr = {isPackaged:true};
+function yi(){return false;}
 const ve = {
   checkForUpdates(){ calls.push("check"); return Promise.resolve(); },
   downloadUpdate(){ calls.push("download"); return Promise.resolve(); }
 };
-const i = (value) => value;
-""" + bindings + "\n" + function("ho", "canUseAutoUpdaterInCurrentRuntime") \
-            + "\n" + function(name, marker) + "\nconst gate = ho();\n" + invocation + "\n" + """
+const Ee = ve;
+const w = g;
+const s = (value) => value;
+""" + bindings + "\n" + function("Mn", "canUseAutoUpdaterInCurrentRuntime") \
+            + "\n" + function(name, marker) + "\nconst gate = Mn();\n" + invocation + "\n" + """
 setTimeout(() => process.stdout.write(JSON.stringify({gate, calls})), 0);
 """
         result = subprocess.run(
@@ -159,47 +164,45 @@ setTimeout(() => process.stdout.write(JSON.stringify({gate, calls})), 0);
     def test_main_patch_existing_gate_blocks_every_updater_entry(self):
         source = PUBLIC_MAIN_SOURCE.read_bytes()
         patched = privacy.patch_main_payload(source, Path("/synthetic/root"), "a" * 32)
-        self.assertEqual(patched.count(b"ve.checkForUpdates()"), 5)
-        self.assertEqual(patched.count(b"ve.downloadUpdate(t)"), 1)
-        self.assertIn(b"async function Sw(e={}){if(e.enabled===!1)", patched)
+        self.assertEqual(patched.count(b"Ee.checkForUpdates()"), 5)
+        self.assertEqual(patched.count(b"Ee.downloadUpdate(t)"), 1)
+        self.assertIn(b"function Mn(){return !1", patched)
         cases = (
             (
-                "Rw", "checkForUpdateMenuClick",
-                'Rw({isDestroyed(){return false;},webContents:{id:7,send(){}}});',
+                "Ny", "checkForUpdateMenuClick",
+                'Ny({isDestroyed(){return false;},webContents:{id:7,send(){}}});',
                 """
-const fo = {getFocusedWindow(){return null;}, getAllWindows(){return [];}};
-const k = {UpdateCheckResult:"update"}; const B = {kind:"idle"};
-let Jt = false, zi = null, qi = null;
-function cw(){return "stable";} function de(){} function Zi(){Jt=true; return 1;}
-async function Wx(){} function ji(){} function br(){} function uo(){} function mo(){}
+const xn = {getFocusedWindow(){return null;}, getAllWindows(){return [];}};
+const k = {UpdateCheckResult:"update"}; const H = {kind:"idle"};
+let Gd = false, rr = false, fi = null, ct = null, Y = null;
+function Cy(){return "stable";} function we(){} function bi(){return 1;}
+async function XM(){} function _r(){} function vi(){} const wi = {};
 """,
                 ["check"],
             ),
             (
-                "kw", "requestForceAutoUpdate", "kw(() => {});",
+                "By", "requestForceAutoUpdate", "By(() => {});",
                 """
-const B = {kind:"idle"}; let Jt = false, K = null, et = null, ad = null;
-function de(){} function Zi(){Jt=true; return 1;} function ji(){}
-function uo(){} function mo(){} function bt(){return {kind:"idle",enabled:true};}
+const H = {kind:"idle"}; let it = null, qd = null, rr = false, Y = null;
+function bi(){return 1;} function we(){} function vi(){} function Pt(){return H;}
 """,
                 ["check"],
             ),
             (
-                "pd", "refreshAutoUpdaterReleaseChannel", "pd(true);",
+                "Xd", "refreshAutoUpdaterReleaseChannel", "Xd(true);",
                 """
-const B = {kind:"idle"}; let Jt = false, Vi = null, Q = "stable", K = null;
-function cw(){return "stable";} function Zt(){} function de(){}
-function Zi(){Jt=true; return 1;} function ji(){}
-function bt(){return {kind:"idle",enabled:true};}
+const H = {kind:"idle"}; let rr = false, gi = null, ne = "stable", Y = null;
+function Cy(){return "stable";} function er(){} function we(){} function bi(){return 1;}
+function vi(){} function Pt(){return H;}
 """,
                 ["check"],
             ),
             (
-                "mo", "downloadAvailableUpdate", 'mo("test");',
+                "_n", "downloadAvailableUpdate", '_n("test");',
                 """
-const B = {kind:"update-available",version:"1",releaseNotes:null,channel:"stable"};
-let tt = null, rt = null, Xt = null, vt = null, xt = null, Q = "stable";
-class j_ {dispose(){}} function on(){} function xx(){return false;} function po(){}
+const H = {kind:"update-available",version:"1",releaseNotes:null,channel:"stable"};
+let at = null, ct = null, nr = null, It = null, Lt = null, ne = "stable";
+function fo(){} class pM {dispose(){}} function ZM(){return false;} function An(){}
 """,
                 ["download"],
             ),
@@ -229,7 +232,95 @@ class j_ {dispose(){}} function on(){} function xx(){return false;} function po(
         )
         self.assertNotIn(b"this.client.uploadArtifact(", patched)
         self.assertNotIn(b"this.client.createPreparation(", patched)
-        self.assertIn(b'throw new Le("share_disabled"', patched)
+        self.assertIn(b'throw new re("share_disabled"', patched)
+
+    @staticmethod
+    def _share_method(payload, opening, closing):
+        start = payload.index(opening)
+        end = payload.index(closing, start) + 1
+        return payload[start:end].decode("utf-8")
+
+    @unittest.skipUnless(HAS_PUBLIC_SOURCE, "set AGENTBELT_ZCODE_PROOF_ROOT for public extracted bytes")
+    def test_share_patches_fail_closed_before_service_access(self):
+        """Both private bundles reject publish before touching agent services."""
+
+        cases = (
+            (
+                PUBLIC_HOST_SOURCE,
+                privacy.patch_host_payload,
+                b"async publishWithAgent(t,n,r){",
+                b"}async publishInternal(",
+                b"Le",
+            ),
+            (
+                PUBLIC_SCHEDULER_SOURCE,
+                privacy.patch_scheduler_payload,
+                b"async publishWithAgent(n,o,i){",
+                b"}async publishInternal(",
+                b"re",
+            ),
+        )
+        for source_path, patcher, opening, closing, error_name in cases:
+            with self.subTest(source=source_path.parent.parent.name):
+                source = source_path.read_bytes()
+                patched = patcher(source, require_reviewed=True)
+                self.assertEqual(patched.count(opening), 1)
+                self.assertEqual(
+                    patched.count(b'throw new ' + error_name + b'("share_disabled"'),
+                    2,
+                )
+                self.assertNotIn(b"this.client.uploadArtifact(", patched)
+                self.assertNotIn(b"this.client.createPreparation(", patched)
+                publish = self._share_method(patched, opening, closing)
+                internal = self._share_method(
+                    patched,
+                    b"async publishInternal(",
+                    b"}getProgressEmitter(",
+                )
+                script = f"""
+class Le extends Error {{ constructor(kind) {{ super(kind); this.kind = kind; }} }}
+class re extends Error {{ constructor(kind) {{ super(kind); this.kind = kind; }} }}
+class ShareService {{ {publish} {internal} }}
+const accesses = [];
+const service = new ShareService();
+const agent = new Proxy({{}}, {{
+  get(_target, property) {{
+    accesses.push(String(property));
+    throw new Error("service access: " + String(property));
+  }}
+}});
+const results = [];
+for (const method of ["publishWithAgent", "publishInternal"]) {{
+  try {{
+    await service[method](
+      {{accessMode:"all", selection:{{kind:"all"}}}},
+      "operation",
+      agent,
+    );
+    results.push({{method, error:null}});
+  }} catch (error) {{
+    results.push({{method, error:error.kind || error.message}});
+  }}
+}}
+console.log(JSON.stringify({{results, accesses}}));
+"""
+                result = subprocess.run(
+                    ["node", "--input-type=module", "-e", script],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    json.loads(result.stdout),
+                    {
+                        "results": [
+                            {"method": "publishWithAgent", "error": "share_disabled"},
+                            {"method": "publishInternal", "error": "share_disabled"},
+                        ],
+                        "accesses": [],
+                    },
+                )
 
     def test_synthetic_asar_integrity_and_tamper_detection(self):
         archive = synthetic_asar()

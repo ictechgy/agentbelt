@@ -11,12 +11,12 @@ from adapters import zcode_privacy as privacy
 
 
 PROOF = Path(os.environ.get('AGENTBELT_ZCODE_PROOF_ROOT', '/missing-public-proof'))
-SOURCE = PROOF / 'zcode-oss-3.12.3-2026-09-18/source/out/host/index.js'
+SOURCE = PROOF / 'zcode-3.14.1-upgrade-2026-09-21/source/out/host/index.js'
 
 
 def preparation_function(source):
-    opening = b'async function Cte(e){'
-    closing = b'}a(Cte,"prepareSessionStorage")'
+    opening = b'async function t0(e){'
+    closing = b'}i(t0,"prepareSessionStorage")'
     start = source.index(opening)
     return source[start:source.index(closing, start) + 1].decode()
 
@@ -31,20 +31,20 @@ import {EventEmitter} from 'node:events';
 import {PassThrough} from 'node:stream';
 import {createInterface as QRe} from 'node:readline';
 import {fileURLToPath} from 'node:url';
-const a = (value) => value;
-const Ci = (kind) => Object.assign(new Error(kind), {kind});
-const XRe = async (value) => value;
-const YRe = (value) => value;
-const zQ = {parse: value => value};
+const i = (value) => value;
+const eo = (kind) => Object.assign(new Error(kind), {kind});
+const a6 = async (value) => value;
+const c6 = (value) => value;
+const ox = {parse: value => value};
 const scenario = process.argv[2];
 const events = {workers: [], acknowledgements: [], reports: [], observed: [], resolverCalls: 0};
-const WM = () => {
+const VS = () => {
   events.resolverCalls++;
   return {command: '/usr/bin/python3', args: ['-I', '/guard/agentbelt.py',
     'zcode-private-backend', '--generation', 'a'.repeat(32), 'app-server', '--stdio']};
 };
 const controller = new AbortController();
-class _te extends EventEmitter {
+class QD extends EventEmitter {
   constructor(entry, options) {
     super();
     events.workers.push({entry: fileURLToPath(entry), argv: options.argv,
@@ -70,9 +70,10 @@ class _te extends EventEmitter {
   terminate() { events.terminated = true; setImmediate(() => this.emit('exit', 1)); }
 }
 ''' + function + r'''
+const d6 = QRe;
 const preparedPaths = new Set(scenario === 'reuse' ? ['/synthetic/db.sqlite'] : []);
 try {
-  await Cte({cwd:'/synthetic/workspace', env:{}, signal:controller.signal, preparedPaths,
+  await t0({cwd:'/synthetic/workspace', env:{}, signal:controller.signal, preparedPaths,
     observePath: async path => events.observed.push(path), report: phase => events.reports.push(phase)});
   events.completed = true;
 } catch (error) { events.error = error.kind || error.message; }

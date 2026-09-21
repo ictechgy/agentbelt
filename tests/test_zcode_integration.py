@@ -36,13 +36,33 @@ sys.exit(g.run_confined('zcode-protocol-test',work,[str(g.NODE),'/Applications/Z
             thread=threading.Thread(target=read,daemon=True);thread.start()
             try:
                 request={'id':1,'method':'workspace/readPresentation','params':{'workspace':{'workspacePath':tmp,'workspaceKey':tmp}}}
-                process.stdin.write(json.dumps(request)+'\n');process.stdin.flush()
                 import time
                 deadline=time.monotonic()+20
                 reply=None
+                storage_path_seen=False
+                request_sent=False
+                def send(value):
+                    process.stdin.write(json.dumps(value)+'\n');process.stdin.flush()
+                def send_request():
+                    nonlocal request_sent
+                    if not request_sent:
+                        send(request);request_sent=True
                 while time.monotonic()<deadline:
                     item=messages.get(timeout=max(0.1,deadline-time.monotonic()))
+                    if item.get('method')=='startup/storagePath':
+                        storage_path_seen=True
+                        path=item.get('params',{}).get('path')
+                        self.assertIsInstance(path,str)
+                        self.assertNotEqual(Path(path),Path.home()/'.zcode/cli/db/db.sqlite')
+                        send({'method':'startup/storagePathReady','reuse':False})
+                    elif item.get('method')=='startup/storagePrepared':
+                        self.assertTrue(storage_path_seen)
+                        send_request()
+                    elif (item.get('method')=='startup/storageState' and
+                          item.get('params',{}).get('phase')=='ready' and not storage_path_seen):
+                        send_request()
                     if item.get('id')==1:reply=item;break
+                self.assertTrue(request_sent)
                 self.assertIsNotNone(reply)
                 self.assertNotIn('error',reply)
                 self.assertIn('result',reply)

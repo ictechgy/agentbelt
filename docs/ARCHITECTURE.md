@@ -142,13 +142,16 @@ generation. The upgraded manager handles `zcode://` through bundle ID
 `local.agentbelt.zcode.safe-launcher`. The operator records the previous handler before changing
 that association; see the README for registration commands.
 
-The clone is locked to desktop version `3.12.3`, uses bundle ID
+The clone is locked to desktop version `3.14.1`, uses bundle ID
 `local.agentbelt.zcode.snapshot-blocked`, and is placed under the guard root. The
 `check-zcode-private` contract verifies the manifest and executable hash, returns the clone path,
 protected environment, and a 32-character lowercase generation, and the native manager accepts
 only generation-bound backend arguments and the exact private profile/session directories.
-Snapshot uploads and automatic updates must be reported blocked. The clone's updater and startup
-protocol registration remain disabled; the manager's explicit `zcode://` route may forward to
+Snapshot uploads and automatic updates must be reported blocked. In the reviewed 3.14.1
+distribution, the former repository snapshot sidecar is absent. Exact ASAR and CLI hashes
+bind that upstream change. HOST retains the bundled storage-only Worker. HOST and SCHEDULER
+each contain a conversation-share service, and both require publish stubs. The clone's updater
+and startup protocol registration remain disabled; the manager's explicit `zcode://` route may forward to
 the verified clone without putting OAuth values in argv, logs, or files. The private copy shares
 `~/.zcode`; private Chromium user-data and session directories are under
 `<install>/state/zcode-private/user-data` and `<install>/state/zcode-private/session`.

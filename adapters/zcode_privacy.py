@@ -3,7 +3,7 @@
 This module deliberately treats the ZCode distribution as a version-locked
 binary input.  It does not launch the application and it never mutates the
 source application.  The installer makes a copy, applies byte-length
-preserving patches to the two reviewed JavaScript files inside ``app.asar``,
+preserving patches to the three reviewed JavaScript files inside ``app.asar``,
 reseals only the outer application, and publishes it transactionally.
 """
 
@@ -26,26 +26,26 @@ class ZcodePrivacyError(RuntimeError):
     """Raised when a private bundle cannot be proved safe to use."""
 
 
-# Public, reviewed ZCode 3.12.3 evidence.  These values are intentionally
+# Public, reviewed ZCode 3.14.1 evidence.  These values are intentionally
 # duplicated here so a missing or changed proof file cannot silently widen the
 # accepted input set.
-VERSION = "3.12.3"
-BUILD = "3.12.3.7463"
+VERSION = "3.14.1"
+BUILD = "3.14.1.7714"
 ORIGINAL_BUNDLE_ID = "dev.zcode.app"
 ORIGINAL_APP_NAME = "ZCode"
 PRIVATE_BUNDLE_ID = "local.agentbelt.zcode.snapshot-blocked"
 PRIVATE_APP_NAME = "ZCode Snapshot Blocked"
 
-ORIGINAL_ASAR_SHA256 = "6d99a52d5c25bcdc9651d0a4aad57d215580cb11fe06c8a9ce3553387013678e"
-ORIGINAL_HOST_SHA256 = "c8f7b2e50f2c8f7eeb030a377cfc4779b2a0e2037af2239e065157dc2e3e422e"
-ORIGINAL_MAIN_SHA256 = "5105c8659924d8c262bc763302131d6dc1f50b1249d9fc578e2d84cf76f55ae4"
-ORIGINAL_SCHEDULER_SHA256 = "61c571c8a8ab926e9b024e3377efdfe32a5caa318418a09a05a65c6baf2004ac"
-ORIGINAL_CLI_SHA256 = "da61b0663336a65f7cce3dec223678794ccaa58158e304fc0d97b695434a8f01"
-PATCHED_HOST_SHA256 = "fdf8957c843ac7db4d863b72f2eee9c9ea28ad8fa778295913c032148d36f04d"
-PATCHED_SCHEDULER_SHA256 = "05dbaaab73bd49d49ceaa9d2fc3296e1999a2de370707bc187d0228065b81425"
-HOST_SIZE = 2_588_119
-MAIN_SIZE = 708_140
-SCHEDULER_SIZE = 2_108_514
+ORIGINAL_ASAR_SHA256 = "e6e0c8c05fe3b359bca65e404dc6a7621cbe074206ec28dbbe15cde00fec840f"
+ORIGINAL_HOST_SHA256 = "913ed1a36558e6d7e89d838994ee7b4b16883371fd4499ce179fd14240de399a"
+ORIGINAL_MAIN_SHA256 = "1d7becbe3bf920cf6139502d20bf14202f9ea2c3beb33898ff7c7a0441d511f8"
+ORIGINAL_SCHEDULER_SHA256 = "ea8af7a1466ee4ff4ce6e091bd08788db12975d3721e689cc202ef58cc0f160b"
+ORIGINAL_CLI_SHA256 = "500ae84fa2cb8dd74c1264e5f3d3709c004c59b58899f1b0c3e205137a0ef466"
+PATCHED_HOST_SHA256 = "4031d98fdb4b7fc65ef3735cc148a8fdfa25dd94477ea905e5eaca5e6946e730"
+PATCHED_SCHEDULER_SHA256 = "60e5816c782a7a96cf639a33243dc933dbbdf5ab2ce7c60540d8773829488ad9"
+HOST_SIZE = 1_497_846
+MAIN_SIZE = 735_396
+SCHEDULER_SIZE = 1_000_788
 HOST_PATH = "out/host/index.js"
 MAIN_PATH = "out/main/index.js"
 SCHEDULER_PATH = "out/scheduler/index.js"
@@ -60,90 +60,54 @@ DEFAULT_SOURCE_APP = Path("/Applications/ZCode.app")
 _HEX64 = frozenset("0123456789abcdef")
 _HEX32 = frozenset("0123456789abcdef")
 
-# The host proof uses exact method boundaries from prepare_proof.py.  The
-# closing anchors are intentionally included in every spec to prevent a
-# broad/ambiguous replacement from modifying unrelated code.
-HOST_PATCH_SPECS = (
+# The reviewed 3.14.1 distribution removed the repository snapshot sidecar.
+# Exact whole-ASAR and CLI hashes bind that upstream removal; the remaining
+# HOST patch preserves storage startup and disables its own share publisher.
+HOST_SHARE_PATCH_SPECS = (
     (
-        "captureBeforePrompt",
-        b"async captureBeforePrompt(t){",
-        b"}getCaptureQueueDiagnostics()",
-        b"return;",
+        "publishWithAgent",
+        b"async publishWithAgent(t,n,r){",
+        b"}async publishInternal(",
+        b'throw new Le("share_disabled","Conversation sharing is disabled by local policy");',
     ),
     (
-        "captureBeforePromptUnsafe",
-        b"async captureBeforePromptUnsafe(t){",
-        b"}};import",
-        b"return;",
-    ),
-    (
-        "getUploadCredential",
-        b"async getUploadCredential(t,r,o){",
-        b"}pruneExpiredUploadCredentials(",
-        b"return null;",
-    ),
-    (
-        "getUploadKey",
-        b"async getUploadKey(t,r,o,n){",
-        b"}async requestUploadTarget(",
-        b"return null;",
-    ),
-    (
-        "requestUploadTarget",
-        b"async requestUploadTarget(t,r,o,n){",
-        b"}consumeUploadCredential(",
-        b'return {ok:false,reason:"key_expired",message:"repo snapshots disabled"};',
-    ),
-    (
-        "uploadObject",
-        b"async uploadObject(t){",
-        b"}};import",
-        b'return {ok:false,reason:"object_upload_failed",message:"repo snapshots disabled"};',
-    ),
-    (
-        "flushWorkspace",
-        b"async flushWorkspace(t){",
-        b"}async flushWorkspaceLoop(",
-        b"return;",
-    ),
-    (
-        "flushActiveUpload",
-        b"async flushActiveUpload(t){",
-        b"}consumePendingCredential(",
-        b"return false;",
+        "publishInternal",
+        b"async publishInternal(t,n,r=this.zcodeAgentService){",
+        b"}getProgressEmitter(",
+        b'throw new Le("share_disabled","Conversation sharing is disabled by local policy");',
     ),
 )
 
 # Desktop storage preparation runs a fixed bundled Worker with --prepare-storage;
 # it does not start the model provider or tools. The normal Agent command remains
-# the generation-bound Seatbelt launcher. ZCode 3.12.3 incorrectly asks that custom
+# the generation-bound Seatbelt launcher. ZCode 3.14.1 incorrectly asks that custom
 # command for a JavaScript Worker entry and rejects it before preparing any DB.
 # Resolve only the verified private bundle's CLI relative to the HOST module.
 STORAGE_PREPARATION_ORIGINAL = (
-    b'let t=WM({workspacePath:e.cwd,workspaceKey:e.cwd,presentationSurface:"desktop"});'
-    b'if(!t?.supportsStorageStartup||!t.storagePreparationEntry)throw Ci("unsupported_runtime");'
+    b'let t=VS({workspacePath:e.cwd,workspaceKey:e.cwd,presentationSurface:"desktop"});'
+    b'if(!t?.supportsStorageStartup||!t.storagePreparationEntry)throw eo("unsupported_runtime");'
 )
 STORAGE_PREPARATION_REPLACEMENT = (
     b'let t={cwd:e.cwd,env:{ELECTRON_RUN_AS_NODE:"1"},'
     b'storagePreparationEntry:new URL("../../../glm/zcode.cjs",import.meta.url)};'
 )
 
-# The 3.12.3 scheduler gained a ConversationShareService that uploads prepared
+# The scheduler retains a ConversationShareService that uploads prepared
 # conversation artifacts through createPreparation + uploadArtifact.  Both
 # publish entry points are stubbed so no share payload can leave the private
 # copy regardless of which caller reaches the service.
 SCHEDULER_PATCH_SPECS = (
     (
         "publishWithAgent",
-        b"async publishWithAgent(n,r,i){",
+        b"async publishWithAgent(n,o,i){",
         b"}async publishInternal(",
-        b'throw new Le("share_disabled","Conversation sharing is disabled by local policy");',
+        b'throw new re("share_disabled","Conversation sharing is disabled by local policy");',
     ),
     (
         "publishInternal",
-        b"async publishInternal(n,r,i=this.zcodeAgentService){",
+        b"async publishInternal(n,o,i=this.zcodeAgentService){",
         b"}getProgressEmitter(",
-        b'throw new Le("share_disabled","Conversation sharing is disabled by local policy");',
+        b'throw new re("share_disabled","Conversation sharing is disabled by local policy");',
     ),
 )
 
@@ -378,25 +342,22 @@ def _same_length(original: bytes, replacement: bytes, label: str) -> bytes:
 
 
 def patch_host_payload(payload: bytes, *, require_reviewed: bool = False) -> bytes:
-    """Block uploads and retain the bundled storage-only startup Worker."""
+    """Block HOST sharing and retain the bundled storage-only Worker."""
 
     if not isinstance(payload, bytes):
         raise _error("host payload must be bytes")
     if require_reviewed and _sha256_bytes(payload) != ORIGINAL_HOST_SHA256:
-        raise _error("host payload does not match the reviewed ZCode 3.12.3 bytes")
+        raise _error("host payload does not match the reviewed ZCode 3.14.1 bytes")
     original = payload
     patched = bytearray(payload)
-    spans: list[tuple[str, int, int]] = []
-    for name, opening, closing, replacement in HOST_PATCH_SPECS:
+    for name, opening, closing, replacement in HOST_SHARE_PATCH_SPECS:
         if original.count(opening) != 1:
-            raise _error("ambiguous host patch anchor: " + name)
+            raise _error("ambiguous host share patch anchor: " + name)
         start = original.index(opening) + len(opening)
         end = original.find(closing, start)
         if end < 0 or end <= start:
-            raise _error("missing host patch closing anchor: " + name)
-        body = _same_length(original[start:end], replacement, "host " + name)
-        patched[start:end] = body
-        spans.append((name, start, end))
+            raise _error("missing host share patch closing anchor: " + name)
+        patched[start:end] = _same_length(original[start:end], replacement, "host share " + name)
     result = bytes(patched)
     if result.count(STORAGE_PREPARATION_ORIGINAL) != 1:
         raise _error("ambiguous host storage preparation anchor")
@@ -419,7 +380,7 @@ def patch_scheduler_payload(payload: bytes, *, require_reviewed: bool = False) -
     if not isinstance(payload, bytes):
         raise _error("scheduler payload must be bytes")
     if require_reviewed and _sha256_bytes(payload) != ORIGINAL_SCHEDULER_SHA256:
-        raise _error("scheduler payload does not match the reviewed ZCode 3.12.3 bytes")
+        raise _error("scheduler payload does not match the reviewed ZCode 3.14.1 bytes")
     original = payload
     patched = bytearray(payload)
     for name, opening, closing, replacement in SCHEDULER_PATCH_SPECS:
@@ -440,15 +401,15 @@ def patch_scheduler_payload(payload: bytes, *, require_reviewed: bool = False) -
 
 def _main_replacement_specs() -> tuple[tuple[str, bytes, bytes], ...]:
     return (
-        ("production update state", b'enabled:Z==="production"', b"enabled:!1"),
-        ("development updater guard", b"jt.isPackaged||Ki()", b"!1"),
-        ("initial updater state", b'B={kind:"idle",enabled:!0}', b'B={kind:"idle",enabled:!1}'),
+        ("production update state", b'enabled:Ge==="production"', b"enabled:!1"),
+        ("development updater guard", b"tr.isPackaged||yi()", b"!1"),
+        ("initial updater state", b'H={kind:"idle",enabled:!0}', b'H={kind:"idle",enabled:!1}'),
         (
             "force update check",
-            b'Z==="production"&&!n?await kv(',
-            b"!1?await kv(",
+            b'Ge==="production"&&!o?await uC(',
+            b"!1?await uC(",
         ),
-        ("protocol registration", b"by(g,{iconPath:hH});", b"void 0;"),
+        ("protocol registration", b"xb(w,{iconPath:qz});", b"void 0;"),
     )
 
 
@@ -488,8 +449,8 @@ def patch_main_payload(payload: bytes, root: os.PathLike[str] | str, generation:
     # Disable pending-update hydration while preserving the function's span.
     patched = _replace_main_body(
         patched,
-        b"async function vw(e){",
-        b"}i(vw,\"hydratePendingPostUpdateReleaseNotes\")",
+        b"async function Oy(e){",
+        b"}s(Oy,\"hydratePendingPostUpdateReleaseNotes\")",
         b"return;",
         "pending update hydration",
     )
@@ -498,8 +459,8 @@ def patch_main_payload(payload: bytes, root: os.PathLike[str] | str, generation:
     # declaration so all existing call sites retain their return contract, but
     # execute the backend/profile assignments at module scope before app paths
     # and the single-instance lock are initialized.
-    opening = b"async function uo(e=!1){"
-    closing = b"i(uo,\"quitAndInstallUpdate\")"
+    opening = b"async function Tn(e=!1){"
+    closing = b"s(Tn,\"quitAndInstallUpdate\")"
     if patched.count(opening) != 1 or patched.count(closing) != 1:
         raise _error("ambiguous updater install sink anchor")
     start = patched.index(opening)
@@ -517,23 +478,23 @@ def patch_main_payload(payload: bytes, root: os.PathLike[str] | str, generation:
         "app-server",
         "--stdio",
     ]
-    uo_replacement = (
-        b"async function uo(e=!1){return;}"
+    install_replacement = (
+        b"async function Tn(e=!1){return;}"
         + b"process.env.ZCODE_AGENT_SERVER_COMMAND=\"/usr/bin/python3\";"
         + b"process.env.ZCODE_AGENT_SERVER_ARGS_JSON=JSON.stringify("
         + json.dumps(args, ensure_ascii=True, separators=(",", ":")).encode("ascii")
         + b");"
         + b"process.env.ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=\"1\";"
-        + b"dr=\"ZCode Snapshot Blocked\";"
-        + b"oc=!1;"
-        + b"qn=process.env.ZCODE_DESKTOP_USER_DATA_DIR||"
+        + b"vr=\"ZCode Snapshot Blocked\";"
+        + b"Hc=!1;"
+        + b"ln=process.env.ZCODE_DESKTOP_USER_DATA_DIR||"
         + _json_js(str(profile))
         + b";"
-        + b"ic=process.env.ZCODE_DESKTOP_SESSION_DATA_DIR||"
+        + b"zc=process.env.ZCODE_DESKTOP_SESSION_DATA_DIR||"
         + _json_js(str(session))
         + b";"
     )
-    replacement = _same_length(patched[start:end], uo_replacement, "updater install sink")
+    replacement = _same_length(patched[start:end], install_replacement, "updater install sink")
     patched = patched[:start] + replacement + patched[end:]
     if len(patched) != len(original):
         raise _error("main patch changed byte length")
@@ -653,7 +614,7 @@ def patch_asar_payload(
     if not isinstance(asar, bytes):
         raise _error("ASAR payload must be bytes")
     if require_reviewed and _sha256_bytes(asar) != ORIGINAL_ASAR_SHA256:
-        raise _error("app.asar does not match the reviewed ZCode 3.12.3 bytes")
+        raise _error("app.asar does not match the reviewed ZCode 3.14.1 bytes")
     root_path = _as_path(root, "root")
     generation = _validate_generation(generation)
     raw, header, data_start, header_length = _read_asar_bytes(asar)
@@ -668,13 +629,13 @@ def patch_asar_payload(
     if require_reviewed and (
         len(host) != HOST_SIZE or len(main) != MAIN_SIZE or len(scheduler) != SCHEDULER_SIZE
     ):
-        raise _error("reviewed ASAR component sizes do not match ZCode 3.12.3")
+        raise _error("reviewed ASAR component sizes do not match ZCode 3.14.1")
     if require_reviewed and (
         _sha256_bytes(host) != ORIGINAL_HOST_SHA256
         or _sha256_bytes(main) != ORIGINAL_MAIN_SHA256
         or _sha256_bytes(scheduler) != ORIGINAL_SCHEDULER_SHA256
     ):
-        raise _error("ASAR component bytes do not match the reviewed ZCode 3.12.3 files")
+        raise _error("ASAR component bytes do not match the reviewed ZCode 3.14.1 files")
     patched_host = patch_host_payload(host, require_reviewed=require_reviewed)
     patched_main = patch_main_payload(main, root_path, generation)
     patched_scheduler = patch_scheduler_payload(scheduler, require_reviewed=require_reviewed)
@@ -803,9 +764,9 @@ def _verified_source_info(source_app: Path) -> tuple[dict[str, Any], str, str, s
     if info.get("CFBundleIdentifier") != ORIGINAL_BUNDLE_ID:
         raise _error("source bundle identifier is not the reviewed ZCode app")
     if info.get("CFBundleShortVersionString") != VERSION:
-        raise _error("source ZCode version is not 3.12.3")
+        raise _error("source ZCode version is not 3.14.1")
     if info.get("CFBundleVersion") != BUILD:
-        raise _error("source ZCode build is not 3.12.3.7463")
+        raise _error("source ZCode build is not 3.14.1.7714")
     asar = source_app / ASAR_PATH
     cli = source_app / CLI_PATH
     asar_hash = _sha256_file(asar)
@@ -1175,23 +1136,32 @@ def verify(root: os.PathLike[str] | str, generation: str | None = None) -> dict[
         raise _error("private backend command assignment is missing from main")
     if b"ZCODE_AGENT_SERVER_ARGS_JSON=JSON.stringify(" + expected_backend_args + b")" not in main:
         raise _error("private backend generation assignment is missing from main")
-    if b'dr="ZCode Snapshot Blocked"' not in main or b"oc=!1" not in main:
+    if b'vr="ZCode Snapshot Blocked"' not in main or b"Hc=!1" not in main:
         raise _error("private desktop identity assignment is missing from main")
-    if b"async function uo(e=!1){return;}" not in main or b"async function vw(e){return;" not in main:
+    if b"async function Tn(e=!1){return;}" not in main or b"async function Oy(e){return;" not in main:
         raise _error("private updater no-op patches are missing from main")
     for anchor in (
-        b'enabled:Z==="production"',
-        b"jt.isPackaged||Ki()",
-        b'B={kind:"idle",enabled:!0}',
-        b'Z==="production"&&!n?await kv(',
-        b"by(g,{iconPath:hH});",
+        b'enabled:Ge==="production"',
+        b"tr.isPackaged||yi()",
+        b'H={kind:"idle",enabled:!0}',
+        b'Ge==="production"&&!o?await uC(',
+        b"xb(w,{iconPath:qz});",
     ):
         if anchor in main:
             raise _error("an original updater/deep-link anchor remains in main")
+    host = _asar_target_bytes(raw, header, data_start, HOST_PATH)
+    for marker in (
+        b'async publishWithAgent(t,n,r){throw new Le("share_disabled"',
+        b'async publishInternal(t,n,r=this.zcodeAgentService){throw new Le("share_disabled"',
+    ):
+        if marker not in host:
+            raise _error("private share-blocked stub is missing from host")
+    if b"this.client.uploadArtifact(" in host or b"this.client.createPreparation(" in host:
+        raise _error("a live share upload call remains in host")
     scheduler = _asar_target_bytes(raw, header, data_start, SCHEDULER_PATH)
     for marker in (
-        b'async publishWithAgent(n,r,i){throw new Le("share_disabled"',
-        b'async publishInternal(n,r,i=this.zcodeAgentService){throw new Le("share_disabled"',
+        b'async publishWithAgent(n,o,i){throw new re("share_disabled"',
+        b'async publishInternal(n,o,i=this.zcodeAgentService){throw new re("share_disabled"',
     ):
         if marker not in scheduler:
             raise _error("private share-blocked stub is missing from scheduler")

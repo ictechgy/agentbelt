@@ -28,7 +28,7 @@ class RenderTests(unittest.TestCase):
         self.home = Path('/tmp/synthetic-home')
         self.workspace = Path('/tmp/synthetic-work')
         self.env = {'HOME': str(self.home), 'TMPDIR': str(self.home / 'tmp'), 'PUB_CACHE': str(self.home / '.pub-cache'),
-                    'PATH': '/opt/homebrew/bin:/usr/bin', 'GH_TOKEN': 'SYNTHETIC_TOKEN_VALUE_9f3'}
+                    'PATH': '/opt/homebrew/bin:/usr/bin', 'GH_CONFIG_DIR': str(self.home / '.config/gh')}
         self.policy = g.sandbox_policy(self.workspace, self.home, ['pub.dev:443', 'api.z.ai:443'])
         self.text = notice.render_environment_notice(self.workspace, self.home, self.env, self.policy)
 
@@ -44,12 +44,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn('/opt/homebrew', self.text)
         self.assertIn('/Library/Developer/CommandLineTools', self.text)
 
-    def test_describes_github_auth_without_leaking_token(self):
-        self.assertIn('GH_TOKEN', self.text)
+    def test_describes_github_auth_as_files_not_environment(self):
         self.assertIn('.config/gh', self.text)
-        self.assertNotIn('SYNTHETIC_TOKEN_VALUE_9f3', self.text)
-        absent = notice.render_environment_notice(self.workspace, self.home, dict(self.env, GH_TOKEN=''), self.policy)
+        self.assertIn('gh auth token', self.text)
+        self.assertIn('Do not export', self.text)
+        without = {key: value for key, value in self.env.items() if key != 'GH_CONFIG_DIR'}
+        absent = notice.render_environment_notice(self.workspace, self.home, without, self.policy)
         self.assertNotEqual(absent, self.text)
+        self.assertIn('No GitHub token', absent)
 
     def test_explains_dart_cache_location(self):
         """A real session saw the ~/.pub-cache block and misdiagnosed dart verification as impossible."""

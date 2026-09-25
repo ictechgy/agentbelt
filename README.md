@@ -205,9 +205,11 @@ These are documented boundaries, not oversights:
 - **The agent's own config is writable across sessions** for agents that need it at login time (Kimi
   Code). A session can plant configuration that the next session in the same project reads. The
   effect stays inside the sandbox.
-- **A GitHub token, when injected, is visible to the session.** The model never sees it directly, but
-  an agent that prints its environment puts it in context. Inject it only for projects where you
-  want the agent to push.
+- **A GitHub token, when injected, is visible to the session.** It is handed over as files in the
+  isolated home (`~/.config/gh/hosts.yml` for `gh`, `.git-credentials` for git), never as an
+  environment variable, because any same-user process can read another process's environment.
+  The model never sees it directly, but an agent that prints those files puts it in context.
+  Inject it only for projects where you want the agent to push.
 - **Prompts inside the sandbox are not proof of a human.** Anything that needs a real approval
   happens on the host, before launch, as policy.
 

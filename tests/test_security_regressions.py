@@ -110,10 +110,22 @@ class HostBoundaryTests(unittest.TestCase):
     def test_common_launcher_requires_explicit_repository_token_capability(self):
         work = self.base / 'work'
         work.mkdir()
-        code = 'import os;raise SystemExit(9 if os.environ.get("GH_TOKEN") else 0)'
+        # 9: gh's config holds the token; 0: nothing handed over.
+        code = ('import os; from pathlib import Path; d=os.environ.get("GH_CONFIG_DIR"); '
+                'raise SystemExit(9 if d and "SYNTHETIC_AUDIT_TOKEN" in (Path(d)/"hosts.yml").read_text() else 0)')
         command = ['/Library/Developer/CommandLineTools/usr/bin/python3', '-I', '-c', code]
         self.assertEqual(g.run_confined('probe', work, command, ephemeral=True), 0)
         self.assertEqual(g.run_confined('coding', work, command, ephemeral=True, github=True), 9)
+
+    def test_repository_token_never_enters_the_process_environment(self):
+        # Another same-user process can read a process's environment (sysctl KERN_PROCARGS2),
+        # which Seatbelt does not stop; files in the isolated home it cannot read.
+        work = self.base / 'work'
+        work.mkdir()
+        code = ('import os; raise SystemExit(9 if any("SYNTHETIC_AUDIT_TOKEN" in value '
+                'for value in os.environ.values()) else 0)')
+        command = ['/Library/Developer/CommandLineTools/usr/bin/python3', '-I', '-c', code]
+        self.assertEqual(g.run_confined('coding', work, command, ephemeral=True, github=True), 0)
 
     def test_timed_out_probe_stops_its_child_and_cleans_control_state(self):
         work = self.base / 'timeout-work'

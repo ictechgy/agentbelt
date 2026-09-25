@@ -253,10 +253,12 @@ the deadline-miss-mode API (macOS 27) is claimed.
   signals and `ptrace` attach were denied. None of the SBPL rules tried stopped the sysctl:
   `sysctl-read` denials (all, `kern.procargs2`, prefix `kern.proc`), `process-info*` with
   `(target others)`, or a global `process-info*` deny re-allowed for `self`/`same-sandbox`.
-  Exposure: the arguments and environment of the user's other processes, including another
-  confined session's scoped GitHub token. Options: `AUTH_PROC_CHECK` under ES (which
-  flavours it reports needs the R3 measurement), and handing agent tokens over something
-  other than the environment.
+  Exposure: the arguments and environment of the user's other processes. The scoped GitHub
+  token is no longer among them: since 2026-09-25 it reaches the child only as files in its
+  isolated home (`.git-credentials`, `~/.config/gh/hosts.yml`), which other sessions cannot
+  read. Still in environments: `PACKET_ASK_GLM_KEY` while the packet-ask GLM step runs, and
+  per-launch values (SRT's proxy credentials, the Orca broker token). Remaining option for
+  the rest: `AUTH_PROC_CHECK` under ES (which flavours it reports needs the R3 measurement).
 - **Which path spelling ES reports** for firmlinked (`/System/Volumes/Data/...`) and
   hardlinked files, and for paths through a symlinked directory (a package cache root
   the agent replaced with a link), which name-scoped exceptions depend on.

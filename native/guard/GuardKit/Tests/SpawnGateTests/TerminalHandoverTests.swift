@@ -96,7 +96,10 @@ final class TerminalHandoverTests: XCTestCase {
         defer { close(master) }
         var terminalInfo = stat()
         XCTAssertEqual(fstat(slave, &terminalInfo), 0)
-        let argv: [UnsafeMutablePointer<CChar>?] = ["/bin/sh", "-c", script].map { strdup($0) } + [nil]
+        // Typed first: the CI runner's older Swift inferred the literal's elements from
+        // strdup's parameter type and rejected the strings.
+        let words: [String] = ["/bin/sh", "-c", script]
+        let argv: [UnsafeMutablePointer<CChar>?] = words.map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] = [nil]
         defer { argv.forEach { free($0) } }
         let session: pid_t = argv.withUnsafeBufferPointer { argvBuffer in

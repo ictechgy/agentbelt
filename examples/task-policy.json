@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "task_id": "login-ui-example",
+  "revision": 1,
+  "workspace": "/synthetic/project",
+  "valid_from_ns": 100,
+  "expires_at_ns": 1000,
+  "allow": [
+    {"path": "/synthetic/project", "scope": "tree", "operations": ["read"]},
+    {"path": "/synthetic/project/src/login", "scope": "tree", "operations": ["write"]},
+    {"path": "/synthetic/project/tests/login", "scope": "tree", "operations": ["write"]},
+    {"path": "/synthetic/project/bin/check", "scope": "exact", "operations": ["execute"]}
+  ],
+  "deny": [
+    {"path": "/synthetic/project/private", "scope": "tree", "operations": ["read", "write", "execute"]}
+  ]
+}

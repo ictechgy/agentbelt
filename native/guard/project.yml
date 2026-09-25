@@ -1,0 +1,82 @@
+# XcodeGen spec for the agentbelt Guard R2 skeleton.
+# Generate: xcodegen generate   (AgentbeltGuard.xcodeproj is not committed)
+# Build (unsigned, compile check only):
+#   xcodebuild -project AgentbeltGuard.xcodeproj -scheme AgentbeltGuard -configuration Debug \
+#     -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+name: AgentbeltGuard
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+packages:
+  GuardKit:
+    path: GuardKit
+targets:
+  AgentbeltGuard:
+    type: application
+    platform: macOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(AGENTBELT_BUNDLE_PREFIX)
+        INFOPLIST_FILE: App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/AgentbeltGuard.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - target: FileGuard
+        embed: true
+      - sdk: SystemExtensions.framework
+  FileGuard:
+    type: system-extension
+    platform: macOS
+    sources: [FileGuard]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(AGENTBELT_BUNDLE_PREFIX).fileguard
+        PRODUCT_NAME: $(AGENTBELT_BUNDLE_PREFIX).fileguard
+        INFOPLIST_FILE: FileGuard/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FileGuard/FileGuard.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: GuardKit
+        product: GuardCore
+      - package: GuardKit
+        product: GuardTransport
+      - package: GuardKit
+        product: SpawnGate
+      - sdk: libEndpointSecurity.tbd
+      - sdk: libbsm.tbd
+  agentbelt-supervisor:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Supervisor
+        excludes: [Info.plist]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(AGENTBELT_BUNDLE_PREFIX).supervisor
+        INFOPLIST_FILE: Supervisor/Info.plist
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+    dependencies:
+      - package: GuardKit
+        product: GuardCore
+      - package: GuardKit
+        product: GuardTransport
+      - package: GuardKit
+        product: SpawnGate
+schemes:
+  AgentbeltGuard:
+    build:
+      targets:
+        AgentbeltGuard: all
+        agentbelt-supervisor: all

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>agentbelt File Guard</string>
+    <key>CFBundlePackageType</key>
+    <string>SYSX</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+    <key>NSEndpointSecurityMachServiceName</key>
+    <string>$(AGENTBELT_MACH_SERVICE)</string>
+    <key>NSSystemExtensionUsageDescription</key>
+    <string>agentbelt File Guard observes process lineage for AI coding sessions you start with agentbelt.</string>
+    <!-- Trust roots. The Info.plist is sealed by the extension's signature. -->
+    <key>AGBTeamIdentifier</key>
+    <string>$(DEVELOPMENT_TEAM)</string>
+    <key>AGBSupervisorSigningIdentifier</key>
+    <string>$(AGENTBELT_BUNDLE_PREFIX).supervisor</string>
+    <key>AGBApproverSigningIdentifier</key>
+    <string>$(AGENTBELT_BUNDLE_PREFIX)</string>
+</dict>
+</plist>

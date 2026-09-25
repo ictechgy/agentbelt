@@ -16,6 +16,14 @@ jobs:
           /usr/bin/python3 -m compileall -q .
           for f in *.mjs *.cjs; do node --check "$f"; done
           sh -n install.sh
+      - name: Task policy and registry tests (synthetic, no ES entitlement)
+        run: /usr/bin/python3 -I -m unittest discover -s tests -p 'test_task_*.py' -v
+      - name: Native guard package tests (host only, no ES entitlement)
+        run: swift test --package-path native/guard/GuardKit
+      - name: R3 probe harness and signed-build checker (baseline, no ES)
+        run: |
+          swift test --package-path native/guard/R3Probes
+          /usr/bin/python3 -I -m unittest discover -s native/guard/scripts -p 'test_*.py'
       - name: Install into the runner account
         run: ./install.sh
       - name: Initialize state (no agents installed on the runner)
@@ -37,4 +45,4 @@ jobs:
             tests.test_riskgate_audit tests.test_packet_privacy tests.test_profile_domains \
             tests.test_packet_relay.RequestValidationTests tests.test_packet_relay.ProviderTests \
             tests.test_packet_relay.ChannelTests tests.test_packet_promote tests.test_keychain_cancellation \
-            tests.test_shot_queue tests.test_shot_watcher
+            tests.test_shot_queue tests.test_shot_watcher tests.test_git_lock tests.test_git_audit

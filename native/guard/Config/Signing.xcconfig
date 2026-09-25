@@ -1,0 +1,17 @@
+// Operator-specific signing values for the R2 skeleton.
+//
+// The placeholders below build unsigned only (CODE_SIGNING_ALLOWED=NO). A signed build
+// needs a registered App ID for each target and a provisioning profile that actually
+// carries the approved Endpoint Security capability. Put real values in the untracked
+// Signing.local.xcconfig next to this file; do not commit Team IDs or profiles here.
+AGENTBELT_BUNDLE_PREFIX = invalid.agentbelt.unconfigured
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Manual
+ENABLE_HARDENED_RUNTIME = YES
+// Never inject get-task-allow, even into Debug builds: a debuggable supervisor or
+// approver could be driven by any same-user process. Peers are also checked at runtime.
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
+// Mach services of a system extension must be prefixed with the team identifier.
+AGENTBELT_MACH_SERVICE = $(DEVELOPMENT_TEAM).$(AGENTBELT_BUNDLE_PREFIX).fileguard.control
+
+#include? "Signing.local.xcconfig"

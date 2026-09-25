@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleName</key>
+    <string>agentbelt-supervisor</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <!-- Embedded in the binary, so it is covered by the code signature. -->
+    <key>AGBMachServiceName</key>
+    <string>$(AGENTBELT_MACH_SERVICE)</string>
+    <key>AGBTeamIdentifier</key>
+    <string>$(DEVELOPMENT_TEAM)</string>
+    <key>AGBFileGuardSigningIdentifier</key>
+    <string>$(AGENTBELT_BUNDLE_PREFIX).fileguard</string>
+</dict>
+</plist>

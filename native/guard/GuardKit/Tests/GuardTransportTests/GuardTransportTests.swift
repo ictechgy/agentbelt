@@ -76,7 +76,11 @@ final class GuardTransportTests: XCTestCase {
         let received = Captured()
         let server = try listener(selfIs: nil, seen: { peer, role, request in received.set(peer, role, request) })
         defer { server.cancel() }
-        XCTAssertEqual(try client(server).send(.revoke(taskID: "task-a")), .failed("transport_error"))
+        // How the refusal reaches the client differs by OS: macOS 26 reports a connection error,
+        // while the macOS 15 CI runner never answered (timeout). Either way it must fail and
+        // the handler must never see the request.
+        let reply = try client(server).send(.revoke(taskID: "task-a"), timeout: .seconds(3))
+        XCTAssertTrue([.failed("transport_error"), .failed("timeout")].contains(reply), "\(reply)")
         XCTAssertNil(received.value)
     }
 

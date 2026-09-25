@@ -163,7 +163,7 @@ Only the domains below are reachable, through the supervisor proxy. Anything out
 - `~/.config/gh` is intentionally empty. Do not judge the login state from it.
 - The git author identity is already in `$GIT_CONFIG_GLOBAL` (isolated home, locked). `git config user.name/email` fails because `.git/config` is locked.
   If a different identity is truly needed, pass it once with `git -c user.name=... -c user.email=...` or the `GIT_AUTHOR_*` environment variables.
-- Initializing a new repository (`git init`) does not work inside the workspace (it is an ancestor path of the `.git/hooks` and `.git/config` protections). Work in an existing repository.
+- No `.git` can be created, replaced or removed in the workspace, the home or `$TMPDIR`, so `git init`, `git clone`, `git submodule add` and `git worktree add` fail, and the config, hooks, `commondir`, `modules` and `worktrees` of an existing repository are read-only (the host's git would otherwise obey them). Commit, branch, checkout and stash work. Git dependencies of SwiftPM (`.build/checkouts`), dart pub and cargo still work; tools that make their own checkout elsewhere (npm `git+` dependencies, `pip install git+...`, uv or Bundler git sources) fail, so use a released package or a source archive instead of retrying. To read another project's code, download a source archive instead of cloning.
 - Access to the macOS Keychain and to the credentials in the real home is blocked.
 
 ## Do not

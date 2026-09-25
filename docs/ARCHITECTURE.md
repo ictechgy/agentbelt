@@ -26,8 +26,8 @@
    `sandbox_runner.mjs` (trusted, unsandboxed Node) asks sandbox-runtime for the SBPL profile and
    appends the rules sandbox-runtime does not express: pasteboard, Keychain, Apple Events,
    LaunchServices and preference daemons denied by mach name; `trustd` allowed; TTY ioctls limited
-   to the private terminal; `TIOCSTI` denied; writable roots protected from rename; per-launch
-   loopback ports; per-workspace opt-ins. It then execs `sandbox-exec -p <profile> ...`.
+   to the private terminal; `TIOCSTI` denied; writable roots protected from rename; the workspace
+   git lock (`git_lock.mjs`); per-launch loopback ports; per-workspace opt-ins. It then execs `sandbox-exec -p <profile> ...`.
 6. The child runs. Anything that must happen outside the sandbox on the child's behalf (external
    model review, publishing, status relay) goes through a **file-channel relay** or a
    **loopback broker** owned by the supervisor, which holds the real credentials and rewrites identity.
@@ -98,6 +98,19 @@ installed runtime trees and exact trust-store files, not the entire installation
 - **`denyWrite` beats `allowWrite`; specific operations beat wildcards.** Re-allowing one file that
   a secret glob catches (`gradle.keystore`) requires appending a rule that lists the same concrete
   operations after the generated profile.
+- **Host git must not obey state the child wrote.** Host git trusts every gitdir it discovers.
+  Measured (git 2.54, 2026-09-24): an unsandboxed `git status` ran a child-chosen `core.fsmonitor`
+  through `.git/commondir`, `.git/modules/*/config`, a nested repository registered as a gitlink,
+  or a `.git` replaced by a link or `gitdir:` file. `git_lock.mjs` therefore denies creating,
+  replacing or removing any `.git` entry below every write root (workspace, home, TMPDIR, so a
+  repository cannot be built elsewhere and moved in), and every write to `config`,
+  `config.worktree`, `hooks`, `info/attributes`, `commondir`, `modules` and `worktrees` inside any
+  gitdir. The deny must list `file-write-create`/`file-write-unlink` explicitly: SRT re-allows
+  those two as concrete operations for write roots, which beat a wildcard deny. Package managers'
+  checkout trees stay open (`<workspace>/.build/checkouts`, `<home>/.pub-cache/git`,
+  `<home>/.cargo/git`); `git_audit.py` compares the workspace before and after each session and
+  warns about new nested repositories outside those trees and new gitlinks in the index. Commit,
+  branch, checkout, stash and gc still work; clone, init, submodule and worktree creation do not.
 - **Never allow `com.apple.FSEvents`.** Measured: a sandboxed client receives file-name events for
   read-denied paths. Directory watchers get a preload that returns an inert watcher plus polling.
 - **Provider allowlists are exact.** `PROVIDER_HOSTS` and `PROVIDER_ENDPOINTS` are extended

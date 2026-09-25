@@ -651,6 +651,11 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
             # rules (the last SBPL match wins). denyWrite beats allowWrite, so the policy cannot open it and only this
             # append gets through. Other keystores stay denied.
             env['AGENTBELT_GRADLE_KEYSTORE_ROOT'] = str(Path(workspace).resolve())
+        # sandbox_runner locks every gitdir below this root (git_lock.mjs): host git would otherwise obey a config,
+        # redirection or nested repository the child planted. Always set; the runner refuses to start without it.
+        env['AGENTBELT_GIT_LOCK_ROOT'] = str(Path(workspace).resolve())
+        # Package managers' own git checkouts stay writable; git_audit reports any repository that leaves them.
+        env['AGENTBELT_GIT_TOOL_CACHES'] = json.dumps(git_tool_caches(workspace, home))
         policy = sandbox_policy(workspace, home, domains, extra_reads)
         if read_only_workspace:
             policy['filesystem']['denyWrite'].append(str(workspace))
@@ -702,6 +707,8 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         invocation = [str(NODE), str(ROOT / 'sandbox_runner.mjs'), str(config), '--', *command]
         options = dict(cwd=workspace, env=env, umask=0o077, stdout=stdout, stdin=stdin, stderr=stderr)
         import terminal_proxy
+        import git_audit
+        audit_before = audit_git_state(git_audit, workspace)
         try:
             status = terminal_proxy.run(invocation, timeout=timeout, cancel_event=cancel_event, **options)
         except subprocess.TimeoutExpired:
@@ -710,6 +717,7 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
             raise GuardError(str(error)) from None
         except OSError:
             raise GuardError('The private terminal relay failed; no unrestricted fallback.') from None
+        report_git_audit(git_audit, audit_before, workspace, home)
         if mode == 'zcode' and any(str(part).endswith('/glm/zcode.cjs') for part in command):
             runtime_status('zcode-exit.json', {'pid': os.getpid(), 'workspace_id': hashlib.sha256(str(workspace).encode()).hexdigest()[:20], 'stage': 'supervisor-exit', 'exit_code': status})
         return status
@@ -718,6 +726,37 @@ def run_confined(mode, workspace, command, domains=(), extra_env=None, extra_rea
         shutil.rmtree(control)
         if short_tmp is not None:
             shutil.rmtree(short_tmp, ignore_errors=True)
+
+
+def audit_git_state(git_audit, workspace):
+    """Snapshot of nested repositories and gitlinks before the session; None when it cannot be taken."""
+    try:
+        return git_audit.snapshot(workspace)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f'agentbelt: could not record the git state before the session ({error}); '
+              'repositories it leaves behind will not be reported.', file=sys.stderr)
+        return None
+
+
+def report_git_audit(git_audit, before, workspace, home):
+    """Warn about repositories the session left that host git would follow (git_audit.py)."""
+    if before is None:
+        return
+    try:
+        messages = git_audit.findings(before, git_audit.snapshot(workspace), workspace, git_tool_caches(workspace, home))
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f'agentbelt: could not check the git state after the session ({error}); '
+              'inspect nested repositories before running git here.', file=sys.stderr)
+        return
+    if messages:
+        print(git_audit.warning_text(messages), file=sys.stderr)
+
+
+def git_tool_caches(workspace, home):
+    """Trees where SwiftPM, dart pub and cargo may create git repositories (git_lock.mjs gitToolRules)."""
+    home = Path(home).resolve()
+    return [str(Path(workspace).resolve() / '.build/checkouts'), str(home / '.pub-cache/git'),
+            str(home / '.cargo/git')]
 
 
 def write_environment_notice(targets, text):

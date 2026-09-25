@@ -26,26 +26,26 @@ class ZcodePrivacyError(RuntimeError):
     """Raised when a private bundle cannot be proved safe to use."""
 
 
-# Public, reviewed ZCode 3.14.1 evidence.  These values are intentionally
+# Public, reviewed ZCode 3.14.3 evidence.  These values are intentionally
 # duplicated here so a missing or changed proof file cannot silently widen the
 # accepted input set.
-VERSION = "3.14.1"
-BUILD = "3.14.1.7714"
+VERSION = "3.14.3"
+BUILD = "3.14.3.7762"
 ORIGINAL_BUNDLE_ID = "dev.zcode.app"
 ORIGINAL_APP_NAME = "ZCode"
 PRIVATE_BUNDLE_ID = "local.agentbelt.zcode.snapshot-blocked"
 PRIVATE_APP_NAME = "ZCode Snapshot Blocked"
 
-ORIGINAL_ASAR_SHA256 = "e6e0c8c05fe3b359bca65e404dc6a7621cbe074206ec28dbbe15cde00fec840f"
-ORIGINAL_HOST_SHA256 = "913ed1a36558e6d7e89d838994ee7b4b16883371fd4499ce179fd14240de399a"
-ORIGINAL_MAIN_SHA256 = "1d7becbe3bf920cf6139502d20bf14202f9ea2c3beb33898ff7c7a0441d511f8"
-ORIGINAL_SCHEDULER_SHA256 = "ea8af7a1466ee4ff4ce6e091bd08788db12975d3721e689cc202ef58cc0f160b"
-ORIGINAL_CLI_SHA256 = "500ae84fa2cb8dd74c1264e5f3d3709c004c59b58899f1b0c3e205137a0ef466"
-PATCHED_HOST_SHA256 = "4031d98fdb4b7fc65ef3735cc148a8fdfa25dd94477ea905e5eaca5e6946e730"
-PATCHED_SCHEDULER_SHA256 = "60e5816c782a7a96cf639a33243dc933dbbdf5ab2ce7c60540d8773829488ad9"
-HOST_SIZE = 1_497_846
+ORIGINAL_ASAR_SHA256 = "f9284ab361cba887751d18c4c19047825b5ca26d0812025d956fe3be45b7f31e"
+ORIGINAL_HOST_SHA256 = "a339d8142ed19abfbab75af6f8464d98c95042ca87c0b129d2e6300f12d39899"
+ORIGINAL_MAIN_SHA256 = "b0300b4f853cae130ac3e754153d520b023023346949b9a80de6942ecae8da90"
+ORIGINAL_SCHEDULER_SHA256 = "d0c4d048d4a461f04c74983ddd67bfa6103a8eeb9ce8e2f410e305a02a600820"
+ORIGINAL_CLI_SHA256 = "b1df2ef3e5bd76c4af3ecb296bc003a10d3f13191a26610bd0ba940feadad529"
+PATCHED_HOST_SHA256 = "4f620c3475aa3ba909ad9cda1473a57d1b37281b850b4657b286a6fc16ccb253"
+PATCHED_SCHEDULER_SHA256 = "0fae7ae50253f01b67d94ce2300460a85ce4e8e7cbf00a267d41856f384c7ddd"
+HOST_SIZE = 1_497_917
 MAIN_SIZE = 735_396
-SCHEDULER_SIZE = 1_000_788
+SCHEDULER_SIZE = 1_002_197
 HOST_PATH = "out/host/index.js"
 MAIN_PATH = "out/main/index.js"
 SCHEDULER_PATH = "out/scheduler/index.js"
@@ -60,7 +60,7 @@ DEFAULT_SOURCE_APP = Path("/Applications/ZCode.app")
 _HEX64 = frozenset("0123456789abcdef")
 _HEX32 = frozenset("0123456789abcdef")
 
-# The reviewed 3.14.1 distribution removed the repository snapshot sidecar.
+# The reviewed 3.14.3 distribution removed the repository snapshot sidecar.
 # Exact whole-ASAR and CLI hashes bind that upstream removal; the remaining
 # HOST patch preserves storage startup and disables its own share publisher.
 HOST_SHARE_PATCH_SPECS = (
@@ -80,7 +80,7 @@ HOST_SHARE_PATCH_SPECS = (
 
 # Desktop storage preparation runs a fixed bundled Worker with --prepare-storage;
 # it does not start the model provider or tools. The normal Agent command remains
-# the generation-bound Seatbelt launcher. ZCode 3.14.1 incorrectly asks that custom
+# the generation-bound Seatbelt launcher. ZCode 3.14.3 incorrectly asks that custom
 # command for a JavaScript Worker entry and rejects it before preparing any DB.
 # Resolve only the verified private bundle's CLI relative to the HOST module.
 STORAGE_PREPARATION_ORIGINAL = (
@@ -347,7 +347,7 @@ def patch_host_payload(payload: bytes, *, require_reviewed: bool = False) -> byt
     if not isinstance(payload, bytes):
         raise _error("host payload must be bytes")
     if require_reviewed and _sha256_bytes(payload) != ORIGINAL_HOST_SHA256:
-        raise _error("host payload does not match the reviewed ZCode 3.14.1 bytes")
+        raise _error("host payload does not match the reviewed ZCode 3.14.3 bytes")
     original = payload
     patched = bytearray(payload)
     for name, opening, closing, replacement in HOST_SHARE_PATCH_SPECS:
@@ -380,7 +380,7 @@ def patch_scheduler_payload(payload: bytes, *, require_reviewed: bool = False) -
     if not isinstance(payload, bytes):
         raise _error("scheduler payload must be bytes")
     if require_reviewed and _sha256_bytes(payload) != ORIGINAL_SCHEDULER_SHA256:
-        raise _error("scheduler payload does not match the reviewed ZCode 3.14.1 bytes")
+        raise _error("scheduler payload does not match the reviewed ZCode 3.14.3 bytes")
     original = payload
     patched = bytearray(payload)
     for name, opening, closing, replacement in SCHEDULER_PATCH_SPECS:
@@ -614,7 +614,7 @@ def patch_asar_payload(
     if not isinstance(asar, bytes):
         raise _error("ASAR payload must be bytes")
     if require_reviewed and _sha256_bytes(asar) != ORIGINAL_ASAR_SHA256:
-        raise _error("app.asar does not match the reviewed ZCode 3.14.1 bytes")
+        raise _error("app.asar does not match the reviewed ZCode 3.14.3 bytes")
     root_path = _as_path(root, "root")
     generation = _validate_generation(generation)
     raw, header, data_start, header_length = _read_asar_bytes(asar)
@@ -629,13 +629,13 @@ def patch_asar_payload(
     if require_reviewed and (
         len(host) != HOST_SIZE or len(main) != MAIN_SIZE or len(scheduler) != SCHEDULER_SIZE
     ):
-        raise _error("reviewed ASAR component sizes do not match ZCode 3.14.1")
+        raise _error("reviewed ASAR component sizes do not match ZCode 3.14.3")
     if require_reviewed and (
         _sha256_bytes(host) != ORIGINAL_HOST_SHA256
         or _sha256_bytes(main) != ORIGINAL_MAIN_SHA256
         or _sha256_bytes(scheduler) != ORIGINAL_SCHEDULER_SHA256
     ):
-        raise _error("ASAR component bytes do not match the reviewed ZCode 3.14.1 files")
+        raise _error("ASAR component bytes do not match the reviewed ZCode 3.14.3 files")
     patched_host = patch_host_payload(host, require_reviewed=require_reviewed)
     patched_main = patch_main_payload(main, root_path, generation)
     patched_scheduler = patch_scheduler_payload(scheduler, require_reviewed=require_reviewed)
@@ -764,9 +764,9 @@ def _verified_source_info(source_app: Path) -> tuple[dict[str, Any], str, str, s
     if info.get("CFBundleIdentifier") != ORIGINAL_BUNDLE_ID:
         raise _error("source bundle identifier is not the reviewed ZCode app")
     if info.get("CFBundleShortVersionString") != VERSION:
-        raise _error("source ZCode version is not 3.14.1")
+        raise _error("source ZCode version is not 3.14.3")
     if info.get("CFBundleVersion") != BUILD:
-        raise _error("source ZCode build is not 3.14.1.7714")
+        raise _error("source ZCode build is not 3.14.3.7762")
     asar = source_app / ASAR_PATH
     cli = source_app / CLI_PATH
     asar_hash = _sha256_file(asar)

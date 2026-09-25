@@ -11,7 +11,7 @@ import stat
 import subprocess
 
 
-EXPECTED_ORIGINAL_SHA256 = 'fe351d4872d6b35c27f14ec5e895b21d1e14c2b09d78ea174b4b8ecc288974c6'
+EXPECTED_ORIGINAL_SHA256 = '71f18445f23e061eb88b34bce88245887bdd546c17196a8c4d9959afe8de133a'
 _CODESIGN = '/usr/bin/codesign'
 _STAGED_NAME = 'kimi'
 _LAUNCH_PREFIX = 'launch-'

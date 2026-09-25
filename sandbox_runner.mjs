@@ -4,6 +4,7 @@ import path from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { gitLockRules, gitToolRules, resolveRoot } from './git_lock.mjs';
 import { SandboxManager } from './runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/index.js';
 import { SandboxRuntimeConfigSchema } from './runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-config.js';
 
@@ -145,6 +146,19 @@ async function main() {
         + 'file-write-flags file-write-mode file-write-owner file-write-setugid file-write-times file-write-unlink';
       argv[index + 2] += '\n(allow ' + ops + ' (regex ' + JSON.stringify(pattern) + '))\n';
     }
+    // Git state the host would obey stays locked below every write root (see git_lock.mjs):
+    // a repository made in the home or TMPDIR could otherwise be moved into the workspace.
+    // Appended after the SRT rules so it overrides their allowWrite.
+    const gitLockRoot = process.env.AGENTBELT_GIT_LOCK_ROOT;
+    if (!gitLockRoot || !path.isAbsolute(gitLockRoot) || fs.realpathSync(gitLockRoot) !== gitLockRoot) {
+      throw new Error('invalid git lock root');
+    }
+    const lockRoots = new Set([gitLockRoot]);
+    for (const root of result.data.filesystem.allowWrite) {
+      lockRoots.add(resolveRoot(root, fs));
+    }
+    for (const root of lockRoots) argv[index + 2] += gitLockRules(root);
+    argv[index + 2] += gitToolRules(JSON.parse(process.env.AGENTBELT_GIT_TOOL_CACHES || '[]'));
     // Writable roots themselves must not be renamed/replaced by a child. This
     // keeps subsequent launches from resolving a replaced HOME/workspace root.
     const writableRoots = result.data.filesystem.allowWrite;

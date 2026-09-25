@@ -11,7 +11,7 @@ from adapters import zcode_privacy as privacy
 
 
 PROOF = Path(os.environ.get('AGENTBELT_ZCODE_PROOF_ROOT', '/missing-public-proof'))
-SOURCE = PROOF / 'zcode-3.14.1-upgrade-2026-09-21/source/out/host/index.js'
+SOURCE = PROOF / 'agent-updates-2026-09-23/zcode-source/out/host/index.js'
 
 
 def preparation_function(source):

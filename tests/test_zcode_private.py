@@ -27,17 +27,17 @@ from adapters import zcode_privacy as privacy  # noqa: E402
 
 PUBLIC_PROOF_ROOT = Path(os.environ["AGENTBELT_ZCODE_PROOF_ROOT"]) if os.environ.get("AGENTBELT_ZCODE_PROOF_ROOT") else None
 PUBLIC_HOST_SOURCE = (
-    PUBLIC_PROOF_ROOT / "zcode-3.14.1-upgrade-2026-09-21/source/out/host/index.js"
+    PUBLIC_PROOF_ROOT / "agent-updates-2026-09-23/zcode-source/out/host/index.js"
     if PUBLIC_PROOF_ROOT
     else Path("/missing-public-zcode-host")
 )
 PUBLIC_MAIN_SOURCE = (
-    PUBLIC_PROOF_ROOT / "zcode-3.14.1-upgrade-2026-09-21/source/out/main/index.js"
+    PUBLIC_PROOF_ROOT / "agent-updates-2026-09-23/zcode-source/out/main/index.js"
     if PUBLIC_PROOF_ROOT
     else Path("/missing-public-zcode-main")
 )
 PUBLIC_SCHEDULER_SOURCE = (
-    PUBLIC_PROOF_ROOT / "zcode-3.14.1-upgrade-2026-09-21/source/out/scheduler/index.js"
+    PUBLIC_PROOF_ROOT / "agent-updates-2026-09-23/zcode-source/out/scheduler/index.js"
     if PUBLIC_PROOF_ROOT
     else Path("/missing-public-zcode-scheduler")
 )

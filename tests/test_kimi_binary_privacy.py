@@ -81,7 +81,7 @@ class KimiBinaryPrivacyTests(unittest.TestCase):
                     text = (output.read() + errors.read()).decode(errors='replace')
                 if arguments == ['--version']:
                     self.assertEqual(status, 0)
-                    self.assertIn('0.43.1', text)
+                    self.assertIn('2.1.0', text)
                 else:
                     self.assertNotEqual(status, 0)
                     self.assertIn('Refusing non-loopback Kimi server bind by local policy.', text)

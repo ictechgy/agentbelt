@@ -1,6 +1,6 @@
 """kimi mode (`safekimi`) that runs the Kimi Code CLI (Moonshot `kimi`) confined.
 
-Why confine it. Kimi Code 0.43 is a single Node SEA binary that reads and writes the system clipboard through
+Why confine it. The native Kimi Code CLI is a Node SEA binary that reads and writes the system clipboard through
 native clipboard bindings (`@mariozechner/clipboard`, NSPasteboard), `pbcopy`, and osascript (JXA), and it has
 paths for telemetry (`telemetry-logs.kimi.*`), auto-update (`code.kimi.*`), the plugin market, WebBridge/Computer-Use
 binary downloads (`cdn.kimi.com`), and launchd service registration (`ai.kimi.cu.service`). It is wrapped in the same
@@ -49,7 +49,8 @@ KIMI_NOTICE = ('## Kimi Code\n\n'
                '- The verified Kimi runtime disables diagnostic feedback uploads and remote banners, and refuses non-loopback web binding even when re-executed without the preload.\n'
                '- The Kimi settings home is `$KIMI_CODE_HOME`. The `~/.kimi-code` of the host is not visible.\n'
                '- `NODE_OPTIONS` carries the supervisor preload (so that directory watching runs without FSEvents). Do not remove it.\n'
-               '  File change detection is polling, so settings and skills can take a few seconds to be picked up.\n')
+               '  Kimi 2.1 disables config and workspace file watching by default; changes may require a restart.\n'
+               '  When watching is enabled, the guard keeps the polling/FSEvents restrictions in place.\n')
 
 
 def default_profile():

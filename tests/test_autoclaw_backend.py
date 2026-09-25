@@ -520,10 +520,14 @@ class StaleCredentialTests(unittest.TestCase):
             home = Path(tmp) / 'home'; home.mkdir(mode=0o700)
             env = g.clean_environment(home, 'synthetic-token')
             self.assertTrue((home / '.git-credentials').is_file())
-            self.assertEqual(env['GH_TOKEN'], 'synthetic-token')
+            hosts = home / '.config/gh/hosts.yml'
+            self.assertIn('synthetic-token', hosts.read_text())
+            self.assertEqual(env['GH_CONFIG_DIR'], str(home / '.config/gh'))
+            self.assertNotIn('synthetic-token', ' '.join(env.values()))
             env = g.clean_environment(home, None)
             self.assertFalse((home / '.git-credentials').exists())
-            self.assertNotIn('GH_TOKEN', env)
+            self.assertFalse(hosts.exists())
+            self.assertNotIn('GH_CONFIG_DIR', env)
 
 
 class RunnerBrokerProxyTests(unittest.TestCase):

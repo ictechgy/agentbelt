@@ -73,6 +73,12 @@ installed runtime trees and exact trust-store files, not the entire installation
   for reads, atomic response publication and request deletion. A previous session may have planted symlinks.
 - **Repository credentials default absent.** Coding modes explicitly opt in; usage, review,
   history writers and candidate probes do not receive the GitHub token.
+- **Credentials travel as files, not environment variables.** Any same-user process, including
+  another confined session, can read a process's arguments and environment through
+  `sysctl(KERN_PROCARGS2)`, and Seatbelt does not stop it (measured 2026-09-25). Other sessions
+  cannot read this session's isolated home. So the GitHub token is written only to
+  `<home>/.git-credentials` and `<home>/.config/gh/hosts.yml`; the child gets `GH_CONFIG_DIR`
+  and the credential-helper path, never `GH_TOKEN`/`GITHUB_TOKEN`.
 - **No child-writable executable returns to host authority.** Usage login remains confined; its
   scoped preload maps random loopback binding onto the single supervisor-granted callback port.
   The operator opens the printed browser URL. Gemini host review is disabled until independently confined.

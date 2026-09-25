@@ -63,7 +63,20 @@ class SafeWriteTests(unittest.TestCase):
         self.assertFalse((self.outside_dir / 'npmrc-victim').exists())
         self.assertFalse((self.home / '.git-credentials').is_symlink())
         self.assertIn('SYNTHETIC_GITHUB_TOKEN', (self.home / '.git-credentials').read_text())
-        self.assertEqual(env['GH_TOKEN'], 'SYNTHETIC_GITHUB_TOKEN_0123456789')
+        self.assertNotIn('GH_TOKEN', env)
+
+    def test_gh_config_is_neither_written_nor_removed_through_planted_links(self):
+        # A planted ~/.config link must not carry the token out, nor let cleanup delete a host file.
+        victim = self.outside_dir / 'gh'
+        victim.mkdir()
+        (victim / 'hosts.yml').write_text('KEEP')
+        os.symlink(str(self.outside_dir), str(self.home / '.config'))
+        with self.assertRaises(g.GuardError):
+            g.clean_environment(self.home, 'SYNTHETIC_GITHUB_TOKEN_0123456789')
+        self.assertEqual((victim / 'hosts.yml').read_text(), 'KEEP')
+        with self.assertRaises(g.GuardError):
+            g.clean_environment(self.home, None)
+        self.assertEqual((victim / 'hosts.yml').read_text(), 'KEEP')
 
     def test_relay_result_write_does_not_follow_planted_tmp_link(self):
         relay = packet_relay.PacketRelay(self.base, self.home, runner=lambda *a: (0, 'REVIEW', ''))

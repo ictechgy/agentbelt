@@ -187,6 +187,42 @@ def write_private_file(root, relative, text, mode=0o600):
         os.close(descriptor)
 
 
+def remove_private_file(root, relative):
+    """Remove a file below a child-writable tree without following a planted link (see write_private_file).
+
+    A missing component means there is nothing to remove. A link or foreign-owned directory on the way is refused,
+    so cleanup never deletes a host file that a planted `~/.config` link points at.
+    """
+    relative = Path(relative)
+    parts = relative.parts
+    if relative.is_absolute() or not parts or any(part in ('.', '..') for part in parts):
+        raise GuardError('Refusing to remove outside the isolated tree: ' + str(relative))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(str(root), flags)
+    except OSError:
+        raise GuardError('Isolated tree root is missing or is a link: ' + str(root)) from None
+    try:
+        for part in parts[:-1]:
+            try:
+                child = os.open(part, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                return
+            except OSError:
+                raise GuardError('Refusing to remove through a link or non-directory in the isolated home: '
+                                 + part) from None
+            os.close(descriptor)
+            descriptor = child
+            if os.fstat(descriptor).st_uid != os.getuid():
+                raise GuardError('Isolated home directory is not owned by you: ' + part)
+        try:
+            os.unlink(parts[-1], dir_fd=descriptor)  # a link at the final name is removed itself
+        except FileNotFoundError:
+            pass  # nothing left from an earlier launch
+    finally:
+        os.close(descriptor)
+
+
 def link_opencode_auth(home, source):
     """Use fd-relative, no-follow operations beneath an owned isolated home."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -278,6 +314,29 @@ def host_git_identity():
     return tuple(values)
 
 
+# gh's configuration directory inside the isolated home; GH_CONFIG_DIR points here (a path, never the token).
+GH_CONFIG_RELATIVE = '.config/gh'
+
+
+def write_gh_config(home, token):
+    """Give gh the scoped token as a plain hosts.yml, since the sandbox has no Keychain access.
+
+    `version: "1"` marks the multi-account layout as current: an unmarked file makes gh migrate it, and that migration
+    asks api.github.com for the user name (seen with gh 2.95). The user name is a fixed placeholder; git and the API
+    authenticate by the token alone. JSON quoting is valid YAML and keeps any token text a single scalar.
+    """
+    quoted = json.dumps(token)
+    write_private_file(home, GH_CONFIG_RELATIVE + '/config.yml', 'version: "1"\ngit_protocol: https\n')
+    write_private_file(home, GH_CONFIG_RELATIVE + '/hosts.yml',
+                       'github.com:\n'
+                       '    users:\n'
+                       '        x-access-token:\n'
+                       '            oauth_token: ' + quoted + '\n'
+                       '    git_protocol: https\n'
+                       '    oauth_token: ' + quoted + '\n'
+                       '    user: x-access-token\n')
+
+
 def clean_environment(home, github=None, copy_git_identity=True):
     tmp = private_dir(home / 'tmp')
     # An empty .npmrc makes the real ~/.npmrc of the host be ignored. Recreated link-safely on every run.
@@ -339,16 +398,20 @@ def clean_environment(home, github=None, copy_git_identity=True):
         'OPENCODE_DISABLE_SHARE': 'true',
     }
     if not github:
-        # On runs without a token, also delete a credential file left by an earlier run (no sharing via the persistent home).
+        # On runs without a token, also delete credential files left by an earlier run (no sharing via the persistent home).
         stale = home / '.git-credentials'
         if stale.is_symlink() or stale.exists():
             os.unlink(str(stale))
+        remove_private_file(home, '.config/gh/hosts.yml')
     if github:
-        # The scoped token reaches git through the isolated home only. Global and
-        # system git config stay at /dev/null, so nothing else can supply it.
+        # The scoped token reaches git and gh through files in the isolated home only, never through the environment:
+        # any same-user process, including another confined session, can read a process's environment with
+        # sysctl(KERN_PROCARGS2), which Seatbelt does not stop (measured 2026-09-25), while other sessions cannot read
+        # this home. Global and system git config stay at /dev/null, so nothing else can supply a credential.
         store = home / '.git-credentials'
         write_private_file(home, '.git-credentials', 'https://x-access-token:' + github + '@github.com\n')
-        env.update({'GH_TOKEN': github, 'GITHUB_TOKEN': github,
+        write_gh_config(home, github)
+        env.update({'GH_CONFIG_DIR': str(home / GH_CONFIG_RELATIVE),
                     'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'credential.helper',
                     'GIT_CONFIG_VALUE_0': 'store --file ' + str(store)})
     for name in ['TERM', 'COLORTERM', 'COLUMNS', 'LINES']:
@@ -1083,7 +1146,8 @@ AUTOCLAW_NOTICE = ('## AutoClaw coding runtime\n\n'
                    'Model calls go out only through the local model broker of AutoClaw (a loopback port) and no API key '
                    'exists in this environment. '
                    'AutoClaw auto-approves without an approval prompt, so only `deny` from riskgate actually blocks. '
-                   'A repository-scoped GitHub token is present in `GH_TOKEN` and in the isolated home `.git-credentials`, '
+                   'A repository-scoped GitHub token is available to `gh` (isolated `~/.config/gh`) and to git '
+                   '(isolated home `.git-credentials`), '
                    'so push and PR work, but there is no confirmation step, so do push, PR and force-push only when the '
                    'user explicitly asked for it in that turn.\n\n')
 

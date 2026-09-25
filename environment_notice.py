@@ -87,13 +87,20 @@ def render_environment_notice(workspace, home, env, policy, extra=''):
     """Build the isolated environment description Markdown that is injected into the session.
 
     workspace/home are the real paths, env is the environment passed to the child, and policy is the sandbox_policy result.
-    Only the presence of GH_TOKEN is recorded. If the value entered the document it would leak into logs and model input.
+    Only whether a token was handed over is recorded (GH_CONFIG_DIR is set only then); the token itself is never in
+    env. If the value entered the document it would leak into logs and model input.
     """
     home = Path(home)
-    has_github = bool(env.get('GH_TOKEN') or env.get('GITHUB_TOKEN'))
-    github_line = ('GitHub authentication is injected through the `GH_TOKEN`/`GITHUB_TOKEN` environment variables and the '
-                   '`.git-credentials` file in the isolated home. `gh` and `git push` can be used as they are.' if has_github else
+    has_github = bool(env.get('GH_CONFIG_DIR'))
+    github_line = ('GitHub authentication is in files of the isolated home: `gh` reads `~/.config/gh/hosts.yml` '
+                   '(`$GH_CONFIG_DIR`) and `git push` uses the `.git-credentials` store. `gh` and `git push` can be used as '
+                   'they are. `GH_TOKEN`/`GITHUB_TOKEN` are deliberately not set, because any process of the same user can '
+                   'read another process\'s environment. Do not export them. If one tool truly needs the token in its '
+                   'environment, pass it to that single command only, e.g. `GH_TOKEN="$(gh auth token)" tool`.'
+                   if has_github else
                    'No GitHub token is injected. A `gh` authentication failure is not an environment defect but a missing setup.')
+    gh_config_line = ('' if has_github else
+                      '- `~/.config/gh` is intentionally empty. Do not judge the login state from it.\n')
     return f"""# agentbelt isolated environment notice
 
 This session is running inside a macOS Seatbelt sandbox. The supervisor generated the facts below from the
@@ -160,8 +167,7 @@ Only the domains below are reachable, through the supervisor proxy. Anything out
 ## Authentication
 
 - {github_line}
-- `~/.config/gh` is intentionally empty. Do not judge the login state from it.
-- The git author identity is already in `$GIT_CONFIG_GLOBAL` (isolated home, locked). `git config user.name/email` fails because `.git/config` is locked.
+{gh_config_line}- The git author identity is already in `$GIT_CONFIG_GLOBAL` (isolated home, locked). `git config user.name/email` fails because `.git/config` is locked.
   If a different identity is truly needed, pass it once with `git -c user.name=... -c user.email=...` or the `GIT_AUTHOR_*` environment variables.
 - No `.git` can be created, replaced or removed in the workspace, the home or `$TMPDIR`, so `git init`, `git clone`, `git submodule add` and `git worktree add` fail, and the config, hooks, `commondir`, `modules` and `worktrees` of an existing repository are read-only (the host's git would otherwise obey them). Commit, branch, checkout and stash work. Git dependencies of SwiftPM (`.build/checkouts`), dart pub and cargo still work; tools that make their own checkout elsewhere (npm `git+` dependencies, `pip install git+...`, uv or Bundler git sources) fail, so use a released package or a source archive instead of retrying. To read another project's code, download a source archive instead of cloning.
 - Access to the macOS Keychain and to the credentials in the real home is blocked.
